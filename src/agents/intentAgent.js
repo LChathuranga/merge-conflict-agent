@@ -6,6 +6,7 @@ import {
   getOperationInProgress,
 } from '../git/index.js';
 import { parseJsonObject } from './json.js';
+import { askWithOptionalTools } from '../llm/toolLoop.js';
 
 const MAX_COMMITS_PER_SIDE = 20;
 const MAX_BODY_CHARS = 400;
@@ -89,11 +90,16 @@ export const formatIntent = ({ operation, ours, theirs, relationship }) =>
     `Relationship: ${relationship}`,
   ].join('\n');
 
-export const summarizeIntent = async ({ llm, evidence }) => {
-  const raw = await llm.complete({
+// tools: optional read-only tools (for example git_show) to look closer at a commit.
+export const summarizeIntent = async ({ llm, evidence, tools = null, maxToolSteps, onToolEvent }) => {
+  const { text: raw } = await askWithOptionalTools({
+    llm,
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content: buildIntentPrompt(evidence) }],
-    json: true,
+    tools,
+    maxSteps: maxToolSteps,
+    agent: 'Intent Agent',
+    onToolEvent,
   });
   const data = parseJsonObject(raw, 'Intent Agent');
 
@@ -107,10 +113,10 @@ export const summarizeIntent = async ({ llm, evidence }) => {
 };
 
 // Null when there is nothing to learn from (no operation in progress, or no commits on either side).
-export const determineIntent = async ({ llm, cwd, files }) => {
+export const determineIntent = async ({ llm, cwd, files, tools = null, maxToolSteps, onToolEvent }) => {
   const evidence = await gatherIntentEvidence({ cwd, files });
   if (!evidence || (evidence.ours.commits.length === 0 && evidence.theirs.commits.length === 0)) {
     return null;
   }
-  return summarizeIntent({ llm, evidence });
+  return summarizeIntent({ llm, evidence, tools, maxToolSteps, onToolEvent });
 };

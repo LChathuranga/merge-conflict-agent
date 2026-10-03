@@ -6,7 +6,11 @@ import { applyResolutions } from '../conflict/apply.js';
 import { proposeResolution } from '../agents/conflictAgent.js';
 import { validateRepo } from '../agents/validationAgent.js';
 import { determineIntent } from '../agents/intentAgent.js';
+import { createReadOnlyTools, selectTools } from '../tools/readOnlyTools.js';
 import { defaultReferenceAgent, isTestFile } from '../agents/referenceAgent.js';
+
+// The Intent Agent only needs history and docs, not code search.
+const INTENT_TOOLS = ['git_log', 'git_show', 'read_file'];
 
 const existingFiles = async (cwd, files) => {
   const checks = await Promise.all(
@@ -31,6 +35,9 @@ export const resolveConflicts = async ({
   maxAttempts = 5,
   useIntent = true,
   intentAgent = determineIntent,
+  useTools = false,
+  maxToolSteps = 8,
+  toolFactory = createReadOnlyTools,
   useReferences = true,
   referenceAgent = defaultReferenceAgent,
   stage = false,
@@ -40,6 +47,15 @@ export const resolveConflicts = async ({
 }) => {
   const files = await listConflictedFiles(cwd);
   const results = [];
+
+  // Read-only tools the model may call (opt-in). If the model or server turns out not to
+  // support tool calling, the first failure switches them off for the rest of the run.
+  const allTools = useTools ? toolFactory({ cwd }) : null;
+  let toolsEnabled = Boolean(allTools);
+  const onToolEvent = (event) => {
+    if (event.type === 'tools-unavailable') toolsEnabled = false;
+    onEvent(event);
+  };
   const focusedTests = new Set();
 
   // Reference analysis is advisory: a failure costs context and warnings, never the run.
@@ -61,7 +77,14 @@ export const resolveConflicts = async ({
   let intent = null;
   if (useIntent && files.length > 0) {
     try {
-      const found = await intentAgent({ llm, cwd, files });
+      const found = await intentAgent({
+        llm,
+        cwd,
+        files,
+        tools: toolsEnabled ? selectTools(allTools, INTENT_TOOLS) : null,
+        maxToolSteps,
+        onToolEvent,
+      });
       if (found) {
         intent = found.text;
         onEvent({ type: 'intent', intent: found });
@@ -101,7 +124,18 @@ export const resolveConflicts = async ({
       for (let attempt = 0; ; attempt += 1) {
         onEvent({ type: 'proposing', file, hunk, attempt });
         try {
-          proposal = await proposeResolution({ llm, file, fileText, hunk, intent, usages: usages?.text, feedbackRounds });
+          proposal = await proposeResolution({
+            llm,
+            file,
+            fileText,
+            hunk,
+            intent,
+            usages: usages?.text,
+            feedbackRounds,
+            tools: toolsEnabled ? allTools : null,
+            maxToolSteps,
+            onToolEvent,
+          });
         } catch (error) {
           modelError = error.message;
           break;

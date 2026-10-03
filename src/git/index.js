@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runGit } from './exec.js';
+import { SENSITIVE_EXCLUDES } from './sensitive.js';
 
 export const getRepoRoot = async (cwd) => {
   const { stdout } = await runGit(cwd, ['rev-parse', '--show-toplevel']);
@@ -110,6 +111,7 @@ const GREP_EXCLUDES = [
   ':(exclude)pnpm-lock.yaml',
   ':(exclude)*.min.js',
   ':(exclude)*.map',
+  ...SENSITIVE_EXCLUDES,
 ];
 const MAX_SNIPPET_CHARS = 160;
 const MAX_DISTINCT_FILES = 200;
@@ -157,4 +159,28 @@ export const grepPattern = async (cwd, pattern) => {
     .map((line) => line.match(/^(.+?):(\d+):(.*)$/))
     .filter(Boolean)
     .map(([, file, line, text]) => ({ file, line: Number(line), text: text.trim().slice(0, MAX_SNIPPET_CHARS) }));
+};
+
+const HEX_SHA = /^[0-9a-f]{7,40}$/i;
+const MAX_SHOW_CHARS = 8000;
+
+export const isCommitSha = (value) => typeof value === 'string' && HEX_SHA.test(value);
+
+// Message, changed files and patch of one commit (secrets files left out, output capped).
+// Only hex shas are accepted, so a model-supplied value can never act as a git option.
+export const showCommit = async (cwd, sha, { maxChars = MAX_SHOW_CHARS } = {}) => {
+  if (!isCommitSha(sha)) throw new Error('commit must be a hex sha of 7-40 characters (take it from git_log)');
+  const { stdout } = await runGit(cwd, [
+    'show', '--no-color', '--stat', '--patch', '--date=short',
+    '--format=commit %H%nAuthor: %an%nDate: %ad%n%n%s%n%n%b',
+    sha, '--', '.', ...SENSITIVE_EXCLUDES,
+  ]);
+  return stdout.length > maxChars ? `${stdout.slice(0, maxChars)}
+... (truncated)` : stdout;
+};
+
+// Who last changed lines startLine..endLine of `file` as it exists at `rev`.
+export const blameLines = async (cwd, file, startLine, endLine, rev) => {
+  const { stdout } = await runGit(cwd, ['blame', '-L', `${startLine},${endLine}`, '--date=short', rev, '--', file]);
+  return stdout;
 };

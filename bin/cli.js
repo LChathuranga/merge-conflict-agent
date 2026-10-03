@@ -14,6 +14,7 @@ const HELP = `Usage: resolve-conflicts [options]
   --stage       git add resolved files, only if validation passes (implies --validate)
   --no-intent   Skip reading commit messages to learn why each branch changed
   --no-references  Skip finding other uses of changed names, importers and affected tests
+  --tools       Let the model call read-only tools (read files, search, git history) while it works
   --dry-run     Propose resolutions but do not write any files
   -h, --help    Show this help
 
@@ -32,6 +33,7 @@ const main = async () => {
       validate: { type: 'boolean', default: false },
       'no-intent': { type: 'boolean', default: false },
       'no-references': { type: 'boolean', default: false },
+      tools: { type: 'boolean', default: false },
       'dry-run': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -71,6 +73,9 @@ const main = async () => {
     console.log(`  ${bold(magenta('THEIRS'))}${hunk.theirsLabel ? gray(` (${hunk.theirsLabel})`) : ''}:\n` + magenta(indent(hunk.theirs)));
     console.log(`  ${bold(green('PROPOSED'))}:\n` + green(indent(proposal.resolution)));
     console.log(`  ${bold('Why')}: ${proposal.explanation}`);
+    if (proposal.toolCalls?.length) {
+      console.log(gray(`  Model inspected: ${[...new Set(proposal.toolCalls.map((c) => c.name))].join(', ')} (${proposal.toolCalls.length} call${proposal.toolCalls.length === 1 ? '' : 's'})`));
+    }
     (proposal.usedElsewhere ?? []).forEach(({ name, total, references }) => {
       const where = references.slice(0, 3).map((r) => `${r.file}:${r.line}`).join(', ');
       console.log(gray(`  Used elsewhere: ${name} (${total}) ${where}${total > 3 ? ', ...' : ''}`));
@@ -118,6 +123,7 @@ const main = async () => {
       validate: values.validate,
       useIntent: !values['no-intent'],
       useReferences: !values['no-references'],
+      useTools: values.tools,
       dryRun: values['dry-run'],
       onEvent: (e) => {
         if (e.type === 'intent') {
@@ -126,6 +132,10 @@ const main = async () => {
           console.log(`  ${bold(blue('OURS'))} ${gray(`(${ours.label})`)}: ${ours.summary}`);
           console.log(`  ${bold(magenta('THEIRS'))} ${gray(`(${theirs.label})`)}: ${theirs.summary}`);
           console.log(`  ${bold('Relationship')}: ${relationship}\n`);
+        }
+        if (e.type === 'tool-call') console.log(gray(`  [${e.agent}] ${e.ok ? '' : 'failed: '}${e.label}`));
+        if (e.type === 'tools-unavailable') {
+          console.log(yellow(`  ${e.agent}: this model or server could not use tools (${e.reason}); continuing without them.`));
         }
         if (e.type === 'references-unavailable') console.log(gray(`Reference check unavailable: ${e.reason}`));
         if (e.type === 'file-impact') {

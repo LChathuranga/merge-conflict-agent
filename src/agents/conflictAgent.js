@@ -1,4 +1,5 @@
 import { parseJsonObject } from './json.js';
+import { askWithOptionalTools } from '../llm/toolLoop.js';
 
 const CONTEXT_LINES = 15;
 const CONFIDENCE = ['high', 'medium', 'low'];
@@ -100,9 +101,21 @@ export const findDroppedLines = (hunk, resolution) => {
 
 const describeLines = (lines) => lines.slice(0, 2).map((l) => `"${l}"`).join(', ') + (lines.length > 2 ? ', ...' : '');
 
-// llm: object with complete({ system, messages, json }) -> Promise<string>
+// llm: object with complete({ system, messages, json }) -> Promise<string>, and chat() when tools are used.
 // feedbackRounds: [{ proposal, feedback }] for proposals the user turned down, oldest first.
-export const proposeResolution = async ({ llm, file, fileText, hunk, intent, usages, feedbackRounds = [] }) => {
+// tools: optional read-only tools the model may call (falls back to a plain request if unsupported).
+export const proposeResolution = async ({
+  llm,
+  file,
+  fileText,
+  hunk,
+  intent,
+  usages,
+  feedbackRounds = [],
+  tools = null,
+  maxToolSteps,
+  onToolEvent,
+}) => {
   const messages = [{ role: 'user', content: buildPrompt({ file, fileText, hunk, intent, usages }) }];
   for (const { proposal: previous, feedback } of feedbackRounds) {
     messages.push(
@@ -122,7 +135,22 @@ export const proposeResolution = async ({ llm, file, fileText, hunk, intent, usa
       }
     );
   }
-  const ask = (msgs) => llm.complete({ system: SYSTEM_PROMPT, messages: msgs, json: true });
+  let activeTools = tools?.length ? tools : null;
+  const toolCalls = [];
+  const ask = async (msgs) => {
+    const answer = await askWithOptionalTools({
+      llm,
+      system: SYSTEM_PROMPT,
+      messages: msgs,
+      tools: activeTools,
+      maxSteps: maxToolSteps,
+      agent: 'Conflict Agent',
+      onToolEvent,
+    });
+    if (answer.toolsFailed) activeTools = null;
+    toolCalls.push(...answer.calls);
+    return answer.text;
+  };
 
   const raw = await ask(messages);
   let proposal;
@@ -151,5 +179,5 @@ export const proposeResolution = async ({ llm, file, fileText, hunk, intent, usa
     }
   }
 
-  return { ...proposal, flags, needsApproval: proposal.needsApproval || flags.length > 0 };
+  return { ...proposal, flags, toolCalls, needsApproval: proposal.needsApproval || flags.length > 0 };
 };

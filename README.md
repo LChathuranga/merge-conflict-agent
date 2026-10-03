@@ -63,6 +63,7 @@ Without `npm link`, use `node /path/to/merge-conflict-agent/bin/cli.js ...` from
 | `--stage` | `git add` resolved files, only if validation passes (implies `--validate`) |
 | `--no-intent` | Skip reading commit messages to learn why each branch changed |
 | `--no-references` | Skip looking for other uses of the changed names, importers and affected tests |
+| `--tools` | Let the model call read-only tools (read files, search, git history) while it works. Off by default; see [Tool calling](#tool-calling-optional) |
 | `--dry-run` | Propose resolutions but do not write any files |
 
 Colors are used on terminals; set `NO_COLOR=1` to turn them off.
@@ -126,6 +127,36 @@ The Intent Agent answers "why did each side change this?" so the Conflict Agent 
 
 Every source is treated as untrusted data, never as instructions to the model. The agent should also say when the evidence is thin ("unclear") instead of inventing a purpose, and results should state which sources were actually used. When remote PR information is unavailable, the tool will say that its answer is based only on local repository state.
 
+### Tool calling (optional)
+
+By default the code decides what the model sees (the hunk, nearby code, commit messages, where the contested names are used). With `--tools` the model can also ask for more while it works, the way a developer would open another file or check the history. Tool calling is an extra step on top of the fixed pipeline, and everything the pipeline guarantees still applies: the safeguards, your approval, and validation.
+
+The model only *requests* a call; this program decides to run it, and every tool is read-only:
+
+| Tool | What it does |
+|---|---|
+| `read_file` | Lines of a file in the working tree, numbered, up to 200 lines per call |
+| `find_references` | Whole-word search for a name across the repo |
+| `list_importers` | Files that import a given JS/TS file through a relative path |
+| `get_conflict_stages` | The base, ours or theirs version of a conflicted file |
+| `git_log` | Recent commits touching a path, for ours, theirs or both |
+| `git_show` | One commit's message, files and patch (hex sha only) |
+| `git_blame` | Who last changed a line range, on either side |
+
+The Conflict Agent gets all of them. The Intent Agent only gets `git_log`, `git_show` and `read_file`, so it can read specific commits and docs instead of only the latest messages.
+
+**Safety rules**
+
+- No tool writes, stages or runs repository code. Only the orchestrator writes files.
+- Paths are limited to the repository, symlinks are resolved first, and files that commonly hold secrets (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.git/`) are blocked. The same files are left out of search results and `git show` output.
+- Each model turn runs at most 4 calls, each result is capped, a repeated identical call is not run twice, and a run has a budget of 8 steps per question; after that the model must answer.
+- Tool output is treated as untrusted data, and the prompt says so.
+- Every call is printed as it happens (for example `[Conflict Agent] read_file(path="checkout.js")`), and the approval prompt lists which tools the model used.
+
+**If the model cannot use tools** (many small local models cannot), the first failure is reported once, tools are turned off for the rest of the run, and resolving continues without them.
+
+**Privacy:** with a cloud provider (OpenAI, Anthropic), whatever a tool returns is sent to that provider as part of the conversation, in addition to the code already in the prompt. Use a local Ollama model if that is not acceptable.
+
 ### Validation checks
 
 The Validation Agent uses, in priority order:
@@ -158,7 +189,8 @@ src/agents/
   validationAgent.js        runs the repo's own checks (affected tests first)
 src/conflict/               conflict-marker parser and resolution applier
 src/git/                    thin wrappers around the git CLI
-src/llm/                    provider-agnostic client + OpenAI / Anthropic adapters
+src/llm/                    provider-agnostic client + OpenAI / Anthropic adapters, tool-call loop
+src/tools/                  the read-only tools a model may call (with the repo sandbox)
 src/config/                 .env loading and validation
 src/ui/                     terminal colors (the only place VS Code code may live later)
 scripts/                    architecture check, demo repo generator
@@ -185,6 +217,8 @@ Tests use fake models, so they need no API key and no network. Integration tests
 - [ ] More intent sources: PR descriptions and linked issues, ticket text, diffs and tests, review comments, repo docs (see [Intent sources](#intent-sources))
 - [x] Reference Agent: callers, importers and affected tests (text based, JS/TS)
 - [ ] Reference Agent v2: model check of call-site compatibility, more languages, editor-grade references in VS Code
+- [x] Optional read-only tool calling for the Conflict and Intent agents (`--tools`)
+- [ ] More tools: `run_tests` (needs an approval prompt), `fetch_pr` / `fetch_issue` (needs remote access)
 - [ ] Dependency Agent and cherry-pick preflight (prerequisite commits, simulate in a temporary worktree)
 - [ ] Remote PR awareness (GitHub / GitLab / Bitbucket)
 - [ ] VS Code extension
@@ -192,6 +226,7 @@ Tests use fake models, so they need no API key and no network. Integration tests
 ## Known limitations
 
 - Only tested against a local Ollama model so far; the OpenAI and Anthropic adapters are covered by unit tests but not yet by live calls.
+- Tool calling (`--tools`) is covered by tests with scripted models and message-format checks for both providers, but has not been tried against a real model yet. Whether it works depends on the model: strong hosted models handle it well, small local ones often cannot.
 - The "missing lines" safeguard is a text comparison, so it can flag a good merge that rewrites lines. It errs on the side of asking you.
 - Intent summaries are only as good as the commit messages, the only source used so far (more are planned, see [Intent sources](#intent-sources)).
 - Reference analysis only understands JS/TS declarations and is text based (see [Reference analysis](#reference-analysis)).
