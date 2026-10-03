@@ -1,0 +1,23 @@
+{
+  "name": "merge-conflict-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Learning project: multi-agent Git assistant for resolving merge conflicts (milestone 1) and, later, cherry-pick preflight checks",
+  "main": "bin/cli.js",
+  "bin": {
+    "resolve-conflicts": "./bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "demo": "node scripts/makeDemoRepo.js",
+    "pretest": "node scripts/checkArchitecture.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "dotenv": "^16.4.5",
+    "jsonrepair": "^3.15.0",
+    "openai": "^4.68.0"
+  }
+}
