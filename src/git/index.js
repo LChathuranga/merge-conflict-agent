@@ -99,3 +99,62 @@ export const getCommits = async (cwd, { revs, paths = [], maxCount = 20, noWalk 
       return { sha, shortSha: sha.slice(0, 7), author, date, subject, body: body.trim() };
     });
 };
+
+// Generated or vendored files are noise when looking for who uses a symbol.
+const GREP_EXCLUDES = [
+  ':(exclude)node_modules',
+  ':(exclude)dist',
+  ':(exclude)build',
+  ':(exclude)package-lock.json',
+  ':(exclude)yarn.lock',
+  ':(exclude)pnpm-lock.yaml',
+  ':(exclude)*.min.js',
+  ':(exclude)*.map',
+];
+const MAX_SNIPPET_CHARS = 160;
+const MAX_DISTINCT_FILES = 200;
+
+// Whole-word search of tracked files in the working tree.
+// excludeRange: [firstLine, lastLine] inside excludeFile to ignore (the conflict hunk itself).
+// Returns the first `maxResults` hits, the real total, and every distinct file that matched.
+export const grepWord = async (cwd, word, { excludeFile, excludeRange, maxResults = 25 } = {}) => {
+  const { stdout, stderr, ok } = await runGit(
+    cwd,
+    ['grep', '-n', '-w', '-I', '-F', '-e', word, '--', '.', ...GREP_EXCLUDES],
+    { allowFailure: true }
+  );
+  // Exit status 1 just means "no match"; anything with stderr is a real failure.
+  if (!ok && stderr.trim()) throw new Error(`git grep failed: ${stderr.trim()}`);
+
+  const hits = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = line.match(/^(.+?):(\d+):(.*)$/);
+    if (!m) continue;
+    const [, file, lineText, text] = m;
+    const lineNo = Number(lineText);
+    if (file === excludeFile && excludeRange && lineNo >= excludeRange[0] && lineNo <= excludeRange[1]) continue;
+    hits.push({ file, line: lineNo, text: text.trim().slice(0, MAX_SNIPPET_CHARS) });
+  }
+
+  return {
+    references: hits.slice(0, maxResults),
+    total: hits.length,
+    files: [...new Set(hits.map((h) => h.file))].slice(0, MAX_DISTINCT_FILES),
+  };
+};
+
+// Lines that mention `pattern` (extended regex) in tracked files, as { file, line, text }.
+export const grepPattern = async (cwd, pattern) => {
+  const { stdout, stderr, ok } = await runGit(
+    cwd,
+    ['grep', '-n', '-I', '-E', '-e', pattern, '--', '.', ...GREP_EXCLUDES],
+    { allowFailure: true }
+  );
+  if (!ok && stderr.trim()) throw new Error(`git grep failed: ${stderr.trim()}`);
+
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.match(/^(.+?):(\d+):(.*)$/))
+    .filter(Boolean)
+    .map(([, file, line, text]) => ({ file, line: Number(line), text: text.trim().slice(0, MAX_SNIPPET_CHARS) }));
+};

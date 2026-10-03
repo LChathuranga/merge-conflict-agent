@@ -62,6 +62,7 @@ Without `npm link`, use `node /path/to/merge-conflict-agent/bin/cli.js ...` from
 | `--validate` | After resolving, run the repo's checks (test, typecheck, lint, build) |
 | `--stage` | `git add` resolved files, only if validation passes (implies `--validate`) |
 | `--no-intent` | Skip reading commit messages to learn why each branch changed |
+| `--no-references` | Skip looking for other uses of the changed names, importers and affected tests |
 | `--dry-run` | Propose resolutions but do not write any files |
 
 Colors are used on terminals; set `NO_COLOR=1` to turn them off.
@@ -83,14 +84,27 @@ A master orchestrator coordinates read-only specialist agents. Only the orchestr
 
 1. **Detect** conflicted files and parse conflict hunks (plain and diff3 markers).
 2. **Intent Agent** reads the commit messages on both sides (for a merge, cherry-pick or rebase) and summarizes what each side was trying to achieve. The summary is passed to the next step. Commit messages are the only source for now; see [Intent sources](#intent-sources).
-3. **Conflict Agent** proposes a resolution for each hunk using the base, ours and theirs versions plus surrounding code.
-4. **Safeguards** (in code, independent of the model) require your approval when a resolution keeps only one side verbatim, or is missing lines that a side added or changed. These show up as `Flagged:` lines.
-5. **You decide**: accept, give feedback, edit, or skip.
-6. **Apply** the resolution, confirm no conflict markers remain, and write the file.
-7. **Validation Agent** (with `--validate` / `--stage`) runs the repo's checks in order and stops at the first failure.
-8. **Stage** resolved files only if every check passed. If no checks are found, or any file is unresolved, nothing is staged.
+3. **Reference Agent** (before the proposal) finds where the names that the two sides disagree about are used elsewhere in the repository, and passes that to the Conflict Agent so it does not drop something still in use.
+4. **Conflict Agent** proposes a resolution for each hunk using the base, ours and theirs versions plus surrounding code.
+5. **Safeguards** (in code, independent of the model) require your approval when a resolution keeps only one side verbatim, is missing lines that a side added or changed, or drops or changes a name that is still used elsewhere in the repository (the Reference Agent checks the proposal too). These show up as `Flagged:` lines, and the prompt lists `Used elsewhere:` call sites.
+6. **You decide**: accept, give feedback, edit, or skip.
+7. **Apply** the resolution, confirm no conflict markers remain, and write the file. The Reference Agent also records which files import it and which test files are affected.
+8. **Validation Agent** (with `--validate` / `--stage`) runs the affected test files first, then the repo's full checks in order, stopping at the first failure.
+9. **Stage** resolved files only if every check passed. If no checks are found, or any file is unresolved, nothing is staged.
 
 A failure in one hunk or one model reply never crashes the run: bad JSON is retried once, and a file that still fails is reported and left untouched.
+
+### Reference analysis
+
+A clean textual merge can still break code elsewhere, so the Reference Agent looks beyond the conflicted file. It is read-only and needs no model:
+
+1. **What the sides disagree about.** It reads the declarations in the ours, theirs and base versions of each hunk (functions, arrow functions, constants, classes, types, enums, methods and object keys; JS/TS only) and keeps the ones that differ.
+2. **Who uses them.** `git grep` finds other uses in the repository, skipping `node_modules`, lock files, build output and the hunk itself. Very short names and generic object keys such as `id` or `name` are skipped to avoid noise.
+3. **What the proposal does to them.** A name is reported when the proposal drops it, or discards the version of a side that changed it (a side only counts as having changed a name relative to the base). If the name is still used elsewhere, the proposal is flagged and needs your approval.
+4. **Who imports the file.** Relative `import` / `require` paths are resolved, so a same-named file in another folder is not confused with it.
+5. **Which tests to run first.** Test files that import the file or mention a changed name run before the full suite, so a broken merge fails in seconds. This works for `node --test`, Jest, Vitest and Mocha, and is skipped when the runner is not recognized or when `.merge-agent.json` defines the commands.
+
+This is text matching, not a compiler: it can report false positives and miss dynamic usage (names built from strings), alias imports such as `@/utils`, config files and schemas. The search sits behind a small `finder` function, so an editor's "find all references" can replace it in the VS Code extension. If it fails for any reason, it is reported once and the run continues without it. Turn it off with `--no-references`.
 
 ### Intent sources
 
@@ -140,7 +154,8 @@ src/orchestrator/           master agent: the only code that writes files or sta
 src/agents/
   conflictAgent.js          proposes resolutions, flags suspicious ones
   intentAgent.js            explains each side's purpose from commit messages
-  validationAgent.js        runs the repo's own checks
+  referenceAgent.js         finds where changed names are used, importers, affected tests
+  validationAgent.js        runs the repo's own checks (affected tests first)
 src/conflict/               conflict-marker parser and resolution applier
 src/git/                    thin wrappers around the git CLI
 src/llm/                    provider-agnostic client + OpenAI / Anthropic adapters
@@ -168,7 +183,8 @@ Tests use fake models, so they need no API key and no network. Integration tests
 - [x] Validation Agent gating staging
 - [x] Intent Agent (commit messages)
 - [ ] More intent sources: PR descriptions and linked issues, ticket text, diffs and tests, review comments, repo docs (see [Intent sources](#intent-sources))
-- [ ] Reference Agent: callers, imports and tests affected by a resolution
+- [x] Reference Agent: callers, importers and affected tests (text based, JS/TS)
+- [ ] Reference Agent v2: model check of call-site compatibility, more languages, editor-grade references in VS Code
 - [ ] Dependency Agent and cherry-pick preflight (prerequisite commits, simulate in a temporary worktree)
 - [ ] Remote PR awareness (GitHub / GitLab / Bitbucket)
 - [ ] VS Code extension
@@ -178,5 +194,7 @@ Tests use fake models, so they need no API key and no network. Integration tests
 - Only tested against a local Ollama model so far; the OpenAI and Anthropic adapters are covered by unit tests but not yet by live calls.
 - The "missing lines" safeguard is a text comparison, so it can flag a good merge that rewrites lines. It errs on the side of asking you.
 - Intent summaries are only as good as the commit messages, the only source used so far (more are planned, see [Intent sources](#intent-sources)).
+- Reference analysis only understands JS/TS declarations and is text based (see [Reference analysis](#reference-analysis)).
+- Piping answers into the prompts (`printf 'a\n' | resolve-conflicts`) does not work; the prompts expect an interactive terminal.
 - Binary, delete and rename conflicts are reported and skipped.
 - Without remote PR access, results are based only on local repository state.

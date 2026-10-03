@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises';
+import { access, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { listConflictedFiles, readWorkingFile, stageFile } from '../git/index.js';
 import { parseConflictHunks, hasConflictMarkers } from '../conflict/parser.js';
@@ -6,6 +6,14 @@ import { applyResolutions } from '../conflict/apply.js';
 import { proposeResolution } from '../agents/conflictAgent.js';
 import { validateRepo } from '../agents/validationAgent.js';
 import { determineIntent } from '../agents/intentAgent.js';
+import { defaultReferenceAgent, isTestFile } from '../agents/referenceAgent.js';
+
+const existingFiles = async (cwd, files) => {
+  const checks = await Promise.all(
+    files.map((f) => access(path.join(cwd, f)).then(() => f, () => null))
+  );
+  return checks.filter(Boolean);
+};
 
 // Master agent: the only place that writes files or stages changes.
 // UI-agnostic: user interaction goes through the `approve` callback and
@@ -23,6 +31,8 @@ export const resolveConflicts = async ({
   maxAttempts = 5,
   useIntent = true,
   intentAgent = determineIntent,
+  useReferences = true,
+  referenceAgent = defaultReferenceAgent,
   stage = false,
   validate = false,
   validator = validateRepo,
@@ -30,6 +40,21 @@ export const resolveConflicts = async ({
 }) => {
   const files = await listConflictedFiles(cwd);
   const results = [];
+  const focusedTests = new Set();
+
+  // Reference analysis is advisory: a failure costs context and warnings, never the run.
+  let referencesWarned = false;
+  const bestEffort = async (fn) => {
+    try {
+      return await fn();
+    } catch (error) {
+      if (!referencesWarned) {
+        referencesWarned = true;
+        onEvent({ type: 'references-unavailable', reason: error.message });
+      }
+      return null;
+    }
+  };
 
   // Why each side made its change, from commit messages. Best effort: a failure here
   // only costs the Conflict Agent some context, so it never blocks resolving.
@@ -68,14 +93,30 @@ export const resolveConflicts = async ({
       let proposal;
       let decision;
 
+      // Where the contested names are used elsewhere; looked up once, reused across retries.
+      const usages = useReferences
+        ? await bestEffort(() => referenceAgent.gatherUsages({ cwd, file, hunk }))
+        : null;
+
       for (let attempt = 0; ; attempt += 1) {
         onEvent({ type: 'proposing', file, hunk, attempt });
         try {
-          proposal = await proposeResolution({ llm, file, fileText, hunk, intent, feedbackRounds });
+          proposal = await proposeResolution({ llm, file, fileText, hunk, intent, usages: usages?.text, feedbackRounds });
         } catch (error) {
           modelError = error.message;
           break;
         }
+
+        const assessment = useReferences
+          ? await bestEffort(() => referenceAgent.assessResolution({ hunk, resolution: proposal.resolution, usages }))
+          : null;
+        proposal = {
+          ...proposal,
+          references: assessment,
+          usedElsewhere: usages?.symbols ?? [],
+          flags: [...proposal.flags, ...(assessment?.flags ?? [])],
+          needsApproval: proposal.needsApproval || (assessment?.flags.length ?? 0) > 0,
+        };
 
         // A revised proposal always goes back to the user: they asked for the change.
         const asksUser = proposal.needsApproval || reviewAll || attempt > 0;
@@ -98,10 +139,16 @@ export const resolveConflicts = async ({
         rejected = true;
         break;
       }
+      // Text the user typed has not been assessed yet; check what it changes too.
+      const assessment =
+        decision.action === 'edit' && useReferences
+          ? await bestEffort(() => referenceAgent.assessResolution({ hunk, resolution: decision.resolution, usages }))
+          : proposal.references;
       accepted.push({
         hunk,
         resolution: decision.action === 'edit' ? decision.resolution : proposal.resolution,
         proposal,
+        assessment,
       });
     }
 
@@ -128,10 +175,32 @@ export const resolveConflicts = async ({
       await writeFile(path.join(cwd, file), resolvedText, 'utf8');
     }
 
+    // Impact beyond this file: who imports it, and which tests to run first.
+    const importers = useReferences
+      ? (await bestEffort(() => referenceAgent.findImporters({ cwd, file }))) ?? []
+      : [];
+    const impactedTests = new Set([
+      ...importers.filter(isTestFile),
+      ...accepted.flatMap((a) => a.assessment?.testFiles ?? []),
+      ...(isTestFile(file) ? [file] : []),
+    ]);
+    impactedTests.forEach((t) => focusedTests.add(t));
+
+    const impact = {
+      importers,
+      testFiles: [...impactedTests],
+      changes: accepted
+        .flatMap((a) => a.assessment?.changes ?? [])
+        .filter((c) => c.total > 0)
+        .map(({ name, kind, change, discardedFrom, total, references }) => ({ name, kind, change, discardedFrom, total, references })),
+    };
+    onEvent({ type: 'file-impact', file, impact });
+
     results.push({
       file,
       status: dryRun ? 'would-resolve' : 'resolved',
       staged: false,
+      impact,
       hunks: accepted.map(({ proposal }) => ({
         confidence: proposal.confidence,
         explanation: proposal.explanation,
@@ -151,7 +220,7 @@ export const resolveConflicts = async ({
     if (!allResolved) {
       notValidatedReason = 'some files are still unresolved, so the repository cannot be validated';
     } else {
-      validation = await validator({ cwd, onEvent });
+      validation = await validator({ cwd, onEvent, focusedTests: await existingFiles(cwd, [...focusedTests]) });
       onEvent({ type: 'validated', validation });
       if (!validation.ran) notValidatedReason = 'no validation commands found';
     }

@@ -16,7 +16,10 @@ if (existsSync(target) && readdirSync(target).length > 0) {
 mkdirSync(target, { recursive: true });
 
 const git = (...args) => execFileSync('git', args, { cwd: target, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-const write = (file, text) => writeFileSync(path.join(target, file), text);
+const write = (file, text) => {
+  mkdirSync(path.dirname(path.join(target, file)), { recursive: true });
+  writeFileSync(path.join(target, file), text);
+};
 
 git('init', '-q', '-b', 'main');
 git('config', 'user.email', 'demo@example.com');
@@ -39,6 +42,29 @@ const BASE = {
   // Hard / ambiguous: both sides set the same constant to contradictory values.
   'auth.js': `// Session lifetime for logged-in users
 export const SESSION_MINUTES = 30;
+`,
+};
+
+// Untouched by either branch: they use the contested names, so the Reference Agent has something to find.
+const CALLERS = {
+  'package.json': `{ "name": "demo", "type": "module", "scripts": { "test": "node --test" } }
+`,
+  'checkout.js': `import { calculateTotal } from './price.js';
+import { config } from './config.js';
+
+export const checkout = (items) => ({ total: calculateTotal(items), timeout: config.timeout });
+`,
+  'session.js': `import { SESSION_MINUTES } from './auth.js';
+
+export const expiresInMs = () => SESSION_MINUTES * 60 * 1000;
+`,
+  'test/checkout.test.js': `import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { calculateTotal } from '../price.js';
+
+test('total is a number', () => {
+  assert.equal(typeof calculateTotal([{ price: 1, qty: 2 }]), 'number');
+});
 `,
 };
 
@@ -81,7 +107,7 @@ const commitAll = (files, message) => {
   git('commit', '-q', '-m', message);
 };
 
-commitAll(BASE, 'base');
+commitAll({ ...BASE, ...CALLERS }, 'base');
 git('checkout', '-q', '-b', 'feature');
 commitAll(THEIRS, 'feature: retries, discount, longer sessions');
 git('checkout', '-q', 'main');
@@ -99,3 +125,5 @@ console.log(`  cd "${target}"`);
 console.log('  resolve-conflicts --dry-run');
 console.log('\nExpected: config.js and price.js resolved by combining both sides;');
 console.log('auth.js (15 vs 120 minutes) should be flagged for your approval.');
+console.log('checkout.js, session.js and test/checkout.test.js use the contested names, so the');
+console.log('Reference Agent should report where they are used, and --validate runs that test first.');

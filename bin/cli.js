@@ -13,6 +13,7 @@ const HELP = `Usage: resolve-conflicts [options]
   --validate    After resolving, run the repo's checks (test, typecheck, lint, build)
   --stage       git add resolved files, only if validation passes (implies --validate)
   --no-intent   Skip reading commit messages to learn why each branch changed
+  --no-references  Skip finding other uses of changed names, importers and affected tests
   --dry-run     Propose resolutions but do not write any files
   -h, --help    Show this help
 
@@ -30,6 +31,7 @@ const main = async () => {
       stage: { type: 'boolean', default: false },
       validate: { type: 'boolean', default: false },
       'no-intent': { type: 'boolean', default: false },
+      'no-references': { type: 'boolean', default: false },
       'dry-run': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -69,6 +71,10 @@ const main = async () => {
     console.log(`  ${bold(magenta('THEIRS'))}${hunk.theirsLabel ? gray(` (${hunk.theirsLabel})`) : ''}:\n` + magenta(indent(hunk.theirs)));
     console.log(`  ${bold(green('PROPOSED'))}:\n` + green(indent(proposal.resolution)));
     console.log(`  ${bold('Why')}: ${proposal.explanation}`);
+    (proposal.usedElsewhere ?? []).forEach(({ name, total, references }) => {
+      const where = references.slice(0, 3).map((r) => `${r.file}:${r.line}`).join(', ');
+      console.log(gray(`  Used elsewhere: ${name} (${total}) ${where}${total > 3 ? ', ...' : ''}`));
+    });
     proposal.flags.forEach((flag) => console.log(yellow(`  Flagged: ${flag}`)));
     for (;;) {
       let answer;
@@ -111,6 +117,7 @@ const main = async () => {
       stage: values.stage,
       validate: values.validate,
       useIntent: !values['no-intent'],
+      useReferences: !values['no-references'],
       dryRun: values['dry-run'],
       onEvent: (e) => {
         if (e.type === 'intent') {
@@ -119,6 +126,14 @@ const main = async () => {
           console.log(`  ${bold(blue('OURS'))} ${gray(`(${ours.label})`)}: ${ours.summary}`);
           console.log(`  ${bold(magenta('THEIRS'))} ${gray(`(${theirs.label})`)}: ${theirs.summary}`);
           console.log(`  ${bold('Relationship')}: ${relationship}\n`);
+        }
+        if (e.type === 'references-unavailable') console.log(gray(`Reference check unavailable: ${e.reason}`));
+        if (e.type === 'file-impact') {
+          const { importers, testFiles } = e.impact;
+          const parts = [];
+          if (importers.length > 0) parts.push(`imported by ${importers.length} file${importers.length === 1 ? '' : 's'}`);
+          if (testFiles.length > 0) parts.push(`${testFiles.length} related test file${testFiles.length === 1 ? '' : 's'}`);
+          if (parts.length > 0) console.log(gray(`  Impact on ${e.file}: ${parts.join(', ')}`));
         }
         if (e.type === 'intent-unavailable') console.log(gray(`Branch intent unavailable: ${e.reason}\n`));
         if (e.type === 'proposing') {

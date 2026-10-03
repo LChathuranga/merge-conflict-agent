@@ -148,8 +148,38 @@ export const runValidation = async ({ cwd, commands, onEvent = () => {}, timeout
   return { ran: commands.length > 0, passed: commands.length > 0 && !failed, steps };
 };
 
-export const validateRepo = async ({ cwd, onEvent }) => {
+const SAFE_TEST_PATH = /^[\w@.\/ +-]+$/;
+const MAX_FOCUSED_TESTS = 50;
+
+// Command that runs only the given test files, or null when the test runner is not
+// recognized (a wrong guess would be worse than skipping the shortcut).
+export const detectFocusedTestCommand = async (cwd, testFiles) => {
+  const files = testFiles.filter((f) => SAFE_TEST_PATH.test(f)).slice(0, MAX_FOCUSED_TESTS);
+  if (files.length === 0) return null;
+
+  const pkg = await readJsonIfExists(path.join(cwd, 'package.json'));
+  const testScript = pkg?.scripts?.test ?? '';
+  const deps = { ...pkg?.dependencies, ...pkg?.devDependencies };
+  const args = files.map((f) => `"${f}"`).join(' ');
+
+  if (/\bnode(?:\.exe)?\b[^&|;]*--test\b/.test(testScript)) return `node --test ${args}`;
+  if (/\bvitest\b/.test(testScript) || deps.vitest) return `npx --no-install vitest run ${args}`;
+  if (/\bjest\b/.test(testScript) || deps.jest) return `npx --no-install jest --runTestsByPath ${args}`;
+  if (/\bmocha\b/.test(testScript) || deps.mocha) return `npx --no-install mocha ${args}`;
+  return null;
+};
+
+// focusedTests: test files affected by the resolution. They run first so a break fails fast,
+// before the full suite. Skipped when the repo spelled out its own commands in .merge-agent.json.
+export const validateRepo = async ({ cwd, onEvent, focusedTests = [] }) => {
   const { source, commands } = await detectValidationCommands(cwd);
-  const result = await runValidation({ cwd, commands, onEvent });
+
+  let all = commands;
+  if (source === 'package.json' && focusedTests.length > 0) {
+    const command = await detectFocusedTestCommand(cwd, focusedTests);
+    if (command) all = [{ name: 'focused tests', command }, ...commands];
+  }
+
+  const result = await runValidation({ cwd, commands: all, onEvent });
   return { ...result, source };
 };
