@@ -1,4 +1,4 @@
-import { jsonrepair } from 'jsonrepair';
+import { parseJsonObject } from './json.js';
 
 const CONTEXT_LINES = 15;
 const CONFIDENCE = ['high', 'medium', 'low'];
@@ -43,13 +43,7 @@ export const buildPrompt = ({ file, fileText, hunk, intent }) => {
 };
 
 export const parseResolution = (raw) => {
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start === -1 || end === -1) {
-    throw new Error('Conflict Agent returned no JSON object');
-  }
-
-  const data = JSON.parse(jsonrepair(raw.slice(start, end + 1)));
+  const data = parseJsonObject(raw, 'Conflict Agent');
   if (typeof data.resolution !== 'string') {
     throw new Error('Conflict Agent response is missing a string "resolution"');
   }

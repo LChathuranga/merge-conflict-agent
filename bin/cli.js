@@ -12,6 +12,7 @@ const HELP = `Usage: resolve-conflicts [options]
   --review      Ask for approval on every hunk, not just uncertain ones
   --validate    After resolving, run the repo's checks (test, typecheck, lint, build)
   --stage       git add resolved files, only if validation passes (implies --validate)
+  --no-intent   Skip reading commit messages to learn why each branch changed
   --dry-run     Propose resolutions but do not write any files
   -h, --help    Show this help
 
@@ -28,6 +29,7 @@ const main = async () => {
       review: { type: 'boolean', default: false },
       stage: { type: 'boolean', default: false },
       validate: { type: 'boolean', default: false },
+      'no-intent': { type: 'boolean', default: false },
       'dry-run': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -108,8 +110,17 @@ const main = async () => {
       reviewAll: values.review,
       stage: values.stage,
       validate: values.validate,
+      useIntent: !values['no-intent'],
       dryRun: values['dry-run'],
       onEvent: (e) => {
+        if (e.type === 'intent') {
+          const { operation, ours, theirs, relationship } = e.intent;
+          console.log(`${bold(`Branch intent (${operation}):`)}`);
+          console.log(`  ${bold(blue('OURS'))} ${gray(`(${ours.label})`)}: ${ours.summary}`);
+          console.log(`  ${bold(magenta('THEIRS'))} ${gray(`(${theirs.label})`)}: ${theirs.summary}`);
+          console.log(`  ${bold('Relationship')}: ${relationship}\n`);
+        }
+        if (e.type === 'intent-unavailable') console.log(gray(`Branch intent unavailable: ${e.reason}\n`));
         if (e.type === 'proposing') {
           console.log(cyan(e.attempt > 0
             ? `Re-analyzing ${e.file}:${e.hunk.startLine} with your feedback...`

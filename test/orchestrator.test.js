@@ -28,6 +28,9 @@ const makeConflictRepo = () => {
   return dir;
 };
 
+// These tests script one fake model per run, so the extra intent call is disabled here.
+const resolve = (options) => resolveConflicts({ useIntent: false, ...options });
+
 const llmReplying = (json) => ({ complete: async () => JSON.stringify(json) });
 const confident = { resolution: 'value=2\nvalue=3', explanation: 'take feature', confidence: 'high', ambiguous: false };
 
@@ -39,7 +42,7 @@ const unmerged = (dir) => git(dir, 'diff', '--name-only', '--diff-filter=U').tri
 test('auto-resolves a confident hunk, writes the file, stages after validation passes', async () => {
   const dir = makeConflictRepo();
   try {
-    const { files, validation } = await resolveConflicts({
+    const { files, validation } = await resolve({
       cwd: dir,
       llm: llmReplying(confident),
       approve: async () => assert.fail('should not ask for approval'),
@@ -59,7 +62,7 @@ test('auto-resolves a confident hunk, writes the file, stages after validation p
 test('failed validation blocks staging but leaves the resolved file on disk', async () => {
   const dir = makeConflictRepo();
   try {
-    const { files, stageBlockedReason } = await resolveConflicts({
+    const { files, stageBlockedReason } = await resolve({
       cwd: dir,
       llm: llmReplying(confident),
       approve: async () => assert.fail('should not ask for approval'),
@@ -79,7 +82,7 @@ test('failed validation blocks staging but leaves the resolved file on disk', as
 test('no validation commands found means nothing is staged', async () => {
   const dir = makeConflictRepo();
   try {
-    const { stageBlockedReason, notValidatedReason } = await resolveConflicts({
+    const { stageBlockedReason, notValidatedReason } = await resolve({
       cwd: dir,
       llm: llmReplying(confident),
       approve: async () => assert.fail('should not ask for approval'),
@@ -97,7 +100,7 @@ test('no validation commands found means nothing is staged', async () => {
 test('validation is skipped when a file was rejected, and --validate alone never stages', async () => {
   const dir = makeConflictRepo();
   try {
-    const rejected = await resolveConflicts({
+    const rejected = await resolve({
       cwd: dir,
       llm: llmReplying({ ...confident, ambiguous: true }),
       approve: async () => ({ action: 'reject' }),
@@ -106,7 +109,7 @@ test('validation is skipped when a file was rejected, and --validate alone never
     });
     assert.match(rejected.notValidatedReason, /unresolved/);
 
-    const validated = await resolveConflicts({
+    const validated = await resolve({
       cwd: dir,
       llm: llmReplying(confident),
       approve: async () => assert.fail('should not ask for approval'),
@@ -126,7 +129,7 @@ test('ambiguous hunk asks for approval; reject leaves the file untouched', async
   try {
     const before = readFileSync(path.join(dir, 'f.txt'), 'utf8');
     let asked = 0;
-    const { files } = await resolveConflicts({
+    const { files } = await resolve({
       cwd: dir,
       llm: llmReplying({ ...confident, ambiguous: true }),
       approve: async () => { asked += 1; return { action: 'reject' }; },
@@ -143,7 +146,7 @@ test('edit decision uses the user resolution; dry-run writes nothing', async () 
   const dir = makeConflictRepo();
   try {
     const before = readFileSync(path.join(dir, 'f.txt'), 'utf8');
-    const { files } = await resolveConflicts({
+    const { files } = await resolve({
       cwd: dir,
       llm: llmReplying(confident),
       reviewAll: true,
@@ -153,7 +156,7 @@ test('edit decision uses the user resolution; dry-run writes nothing', async () 
     assert.equal(files[0].status, 'would-resolve');
     assert.equal(readFileSync(path.join(dir, 'f.txt'), 'utf8'), before);
 
-    await resolveConflicts({
+    await resolve({
       cwd: dir,
       llm: llmReplying(confident),
       reviewAll: true,
@@ -169,7 +172,7 @@ test('a hunk that keeps one side verbatim asks for approval even if the model is
   const dir = makeConflictRepo();
   try {
     let asked = 0;
-    const { files } = await resolveConflicts({
+    const { files } = await resolve({
       cwd: dir,
       llm: llmReplying({ ...confident, resolution: 'value=3' }),
       approve: async ({ proposal }) => {
@@ -189,7 +192,7 @@ test('an unparseable model reply fails that file instead of crashing the run', a
   const dir = makeConflictRepo();
   try {
     const before = readFileSync(path.join(dir, 'f.txt'), 'utf8');
-    const { files } = await resolveConflicts({
+    const { files } = await resolve({
       cwd: dir,
       llm: { complete: async () => 'garbage' },
       approve: async () => assert.fail('should not ask for approval'),
@@ -214,7 +217,7 @@ test('feedback sends the user comment back to the model and applies the revised 
     const decisions = [{ action: 'retry', feedback: 'add a comment' }, { action: 'accept' }];
     const attempts = [];
 
-    const { files } = await resolveConflicts({
+    const { files } = await resolve({
       cwd: dir,
       llm,
       reviewAll: true,
@@ -238,7 +241,7 @@ test('a revised proposal is shown to the user even when the model is confident a
     const decisions = [{ action: 'retry', feedback: '' }, { action: 'accept' }];
     // First answer keeps only one side, which forces the first approval request.
     const replies = [{ ...confident, resolution: 'value=3' }, confident];
-    const { files } = await resolveConflicts({
+    const { files } = await resolve({
       cwd: dir,
       llm: { complete: async () => JSON.stringify(replies.shift()) },
       approve: async () => { asked += 1; return decisions.shift(); },
@@ -256,7 +259,7 @@ test('endless retries stop at maxAttempts and the file is left for manual resolu
     const before = readFileSync(path.join(dir, 'f.txt'), 'utf8');
     let modelCalls = 0;
     const events = [];
-    const { files } = await resolveConflicts({
+    const { files } = await resolve({
       cwd: dir,
       llm: { complete: async () => { modelCalls += 1; return JSON.stringify(confident); } },
       reviewAll: true,

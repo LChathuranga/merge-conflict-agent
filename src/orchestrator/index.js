@@ -5,6 +5,7 @@ import { parseConflictHunks, hasConflictMarkers } from '../conflict/parser.js';
 import { applyResolutions } from '../conflict/apply.js';
 import { proposeResolution } from '../agents/conflictAgent.js';
 import { validateRepo } from '../agents/validationAgent.js';
+import { determineIntent } from '../agents/intentAgent.js';
 
 // Master agent: the only place that writes files or stages changes.
 // UI-agnostic: user interaction goes through the `approve` callback and
@@ -20,6 +21,8 @@ export const resolveConflicts = async ({
   onEvent = () => {},
   reviewAll = false,
   maxAttempts = 5,
+  useIntent = true,
+  intentAgent = determineIntent,
   stage = false,
   validate = false,
   validator = validateRepo,
@@ -27,6 +30,23 @@ export const resolveConflicts = async ({
 }) => {
   const files = await listConflictedFiles(cwd);
   const results = [];
+
+  // Why each side made its change, from commit messages. Best effort: a failure here
+  // only costs the Conflict Agent some context, so it never blocks resolving.
+  let intent = null;
+  if (useIntent && files.length > 0) {
+    try {
+      const found = await intentAgent({ llm, cwd, files });
+      if (found) {
+        intent = found.text;
+        onEvent({ type: 'intent', intent: found });
+      } else {
+        onEvent({ type: 'intent-unavailable', reason: 'no commit history found for this operation' });
+      }
+    } catch (error) {
+      onEvent({ type: 'intent-unavailable', reason: error.message });
+    }
+  }
 
   for (const file of files) {
     const fileText = await readWorkingFile(cwd, file);
@@ -51,7 +71,7 @@ export const resolveConflicts = async ({
       for (let attempt = 0; ; attempt += 1) {
         onEvent({ type: 'proposing', file, hunk, attempt });
         try {
-          proposal = await proposeResolution({ llm, file, fileText, hunk, feedbackRounds });
+          proposal = await proposeResolution({ llm, file, fileText, hunk, intent, feedbackRounds });
         } catch (error) {
           modelError = error.message;
           break;
