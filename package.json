@@ -6,13 +6,15 @@
   "description": "Learning project: multi-agent Git assistant for resolving merge conflicts (milestone 1) and, later, cherry-pick preflight checks",
   "main": "bin/cli.js",
   "bin": {
-    "resolve-conflicts": "./bin/cli.js"
+    "resolve-conflicts": "./bin/cli.js",
+    "cherry-pick-check": "./bin/preflight.js"
   },
   "scripts": {
     "start": "node bin/cli.js",
     "demo": "node scripts/makeDemoRepo.js",
     "pretest": "node scripts/checkArchitecture.js",
-    "test": "node --test"
+    "test": "node --test",
+    "demo:pick": "node scripts/makePickDemo.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

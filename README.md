@@ -1,6 +1,9 @@
 # merge-conflict-agent
 
-A multi-agent Git assistant that resolves merge conflicts with an LLM, keeps you in control of every uncertain decision, and refuses to stage anything until your repo's own checks pass.
+A multi-agent Git assistant with two tools:
+
+- **`resolve-conflicts`** resolves merge conflicts with an LLM, keeps you in control of every uncertain decision, and refuses to stage anything until your repo's own checks pass.
+- **`cherry-pick-check`** tells you whether a commit is safe to cherry-pick *before* you change anything: what must already be on the target branch, and what a trial pick in a temporary worktree reveals.
 
 > **Status: learning project, CLI first.** The long-term goal is a VS Code extension. The core is deliberately UI-agnostic so the extension can reuse it. See [PLAN.md](PLAN.md) for the full design.
 
@@ -169,7 +172,53 @@ The Validation Agent uses, in priority order:
 
 Each command has a 10 minute timeout, and a timeout kills the whole process tree. These commands run on your machine, so only use `--validate` in repositories you trust.
 
-## Try it on a demo conflict
+## Cherry-pick preflight
+
+```bash
+cherry-pick-check <commit>                  # report only; nothing in your repo changes
+cherry-pick-check <commit> --onto release   # check against another branch
+cherry-pick-check <commit> --validate       # also run tests/lint/build on the simulated result
+cherry-pick-check <commit> --apply          # after the report, offer the real cherry-pick
+cherry-pick-check <commit> --json           # machine-readable report
+```
+
+(Run `npm link` again after updating so the new command is registered, or use `node bin/preflight.js`.)
+
+A cherry-pick can apply cleanly as text and still break the target branch, for example when the commit calls a function that an earlier, unmerged commit introduced. The preflight looks for that before you commit to anything.
+
+**What it checks** (the Dependency Agent, read-only and deterministic, no model needed)
+
+1. **Already applied?** If the commit, or an identical change, is already on the target, there is nothing to do.
+2. **Lines it depends on.** For every line the commit edits or removes, `git blame` finds who wrote it. If that commit is not on the target, it is a **confirmed prerequisite**.
+3. **Names, files and packages it needs.** Functions it calls, local files it imports and npm packages it uses are looked up on the target. If one is missing but existed just before the commit, the commits that introduced it become confirmed prerequisites. If nothing provides it, the pick is blocked.
+4. **Possible prerequisites.** Other unmerged commits that touch the same files, kept apart from the confirmed ones because nothing proves the commit needs them.
+5. **Concurrent work.** Other local and remote-tracking branches with unmerged commits on the same files.
+6. **A trial pick** in a temporary `git worktree` of the target. It reports a clean pick, an empty one or conflicts, and then lists names the commit removed or re-signed that other files still use. With `--validate` it also runs the repo's checks there, with your `node_modules` made visible through a link that is removed again afterwards.
+
+Your branch, index and working files are never touched; the worktree is deleted when the check ends.
+
+**Outcomes**
+
+| Outcome | Meaning |
+|---|---|
+| Safe | Nothing found. Always shown as "local analysis only" until open pull requests can be checked |
+| Conditional | Other commits must be applied first (listed oldest first) |
+| Risky | Concurrent or unexplained changes: a conflict with no known cause, work on another branch, or names still used that the pick removes |
+| Blocked | A required dependency is missing and nothing provides it, the trial pick errored, validation failed, or it is a merge commit |
+
+Every report lists the evidence, the files changed, the prerequisites, what the trial pick did and what was validated. The real cherry-pick only happens through `--apply`, after you type `yes`, and only on a clean working tree on the target branch. If it stops on conflicts, run `resolve-conflicts`.
+
+Limits in this first version: one commit at a time (no ranges or merge commits), name and import analysis for JS/TS only, alias imports such as `@/utils` are not resolved, a prerequisite's own prerequisites are only found by checking it again after applying it, and no model is involved yet. Open pull requests are not checked, which is why a result is never a plain "safe".
+
+## Try it on a demo
+
+```bash
+npm run demo:pick     # a repo with a feature branch: one independent commit, one hidden dependency, one edit of unmerged lines
+```
+
+It prints three `cherry-pick-check` commands to try and what to expect from each.
+
+### Demo conflict for `resolve-conflicts`
 
 ```bash
 npm run demo
@@ -181,19 +230,22 @@ This builds a throwaway repo, mid-merge, with three conflicts of rising difficul
 
 ```
 bin/cli.js                  CLI entry point (the `resolve-conflicts` command)
+bin/preflight.js            CLI entry point (the `cherry-pick-check` command)
 src/orchestrator/           master agent: the only code that writes files or stages
+src/preflight/              cherry-pick preflight: trial pick, outcome rules, report, apply
 src/agents/
   conflictAgent.js          proposes resolutions, flags suspicious ones
   intentAgent.js            explains each side's purpose from commit messages
   referenceAgent.js         finds where changed names are used, importers, affected tests
+  dependencyAgent.js        finds what a commit needs on the target branch (prerequisites, missing names/files)
   validationAgent.js        runs the repo's own checks (affected tests first)
 src/conflict/               conflict-marker parser and resolution applier
-src/git/                    thin wrappers around the git CLI
+src/git/                    thin wrappers around the git CLI (history queries, worktrees)
 src/llm/                    provider-agnostic client + OpenAI / Anthropic adapters, tool-call loop
 src/tools/                  the read-only tools a model may call (with the repo sandbox)
 src/config/                 .env loading and validation
 src/ui/                     terminal colors (the only place VS Code code may live later)
-scripts/                    architecture check, demo repo generator
+scripts/                    architecture check, demo repo generators
 test/                       node:test suite (uses real temporary git repos)
 ```
 
@@ -219,7 +271,8 @@ Tests use fake models, so they need no API key and no network. Integration tests
 - [ ] Reference Agent v2: model check of call-site compatibility, more languages, editor-grade references in VS Code
 - [x] Optional read-only tool calling for the Conflict and Intent agents (`--tools`)
 - [ ] More tools: `run_tests` (needs an approval prompt), `fetch_pr` / `fetch_issue` (needs remote access)
-- [ ] Dependency Agent and cherry-pick preflight (prerequisite commits, simulate in a temporary worktree)
+- [x] Dependency Agent and cherry-pick preflight (prerequisites, missing names, trial pick in a temporary worktree)
+- [ ] Preflight v2: commit ranges, merge commits, transitive prerequisites, more languages, model-assisted judgment of possible overlaps
 - [ ] Remote PR awareness (GitHub / GitLab / Bitbucket)
 - [ ] VS Code extension
 
@@ -232,4 +285,5 @@ Tests use fake models, so they need no API key and no network. Integration tests
 - Reference analysis only understands JS/TS declarations and is text based (see [Reference analysis](#reference-analysis)).
 - Piping answers into the prompts (`printf 'a\n' | resolve-conflicts`) does not work; the prompts expect an interactive terminal.
 - Binary, delete and rename conflicts are reported and skipped.
-- Without remote PR access, results are based only on local repository state.
+- Without remote PR access, results are based only on local repository state. The cherry-pick preflight therefore never reports a plain "safe".
+- The cherry-pick preflight checks one commit at a time, and its name analysis is text based and JS/TS only. It has been tried on demo repositories and in tests, not yet on a large real-world repository.
