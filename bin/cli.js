@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
+import '../src/config/loadEnv.js';
 import { createLLMClient } from '../src/llm/index.js';
 import { getRepoRoot } from '../src/git/index.js';
 import { resolveConflicts } from '../src/orchestrator/index.js';
@@ -66,9 +67,10 @@ const main = async () => {
     return lines.length > 0 ? lines.join('\n') : null;
   };
 
-  const approve = async ({ file, hunk, proposal, attempt }) => {
+  const approve = async ({ file, hunk, proposal, attempt, index, total }) => {
     const title = attempt > 0 ? `Revised proposal (attempt ${attempt + 1}):` : 'Needs your approval:';
-    console.log(`\n${bold(yellow(title))} ${bold(`${file}:${hunk.startLine}-${hunk.endLine}`)}  (confidence: ${confidence(proposal.confidence)})`);
+    const which = total > 1 ? `, conflict ${index + 1} of ${total}` : '';
+    console.log(`\n${bold(yellow(title))} ${bold(`${file}:${hunk.startLine}-${hunk.endLine}`)}  (confidence: ${confidence(proposal.confidence)}${which})`);
     console.log(`  ${bold(blue('OURS'))}${hunk.oursLabel ? gray(` (${hunk.oursLabel})`) : ''}:\n` + blue(indent(hunk.ours)));
     console.log(`  ${bold(magenta('THEIRS'))}${hunk.theirsLabel ? gray(` (${hunk.theirsLabel})`) : ''}:\n` + magenta(indent(hunk.theirs)));
     console.log(`  ${bold(green('PROPOSED'))}:\n` + green(indent(proposal.resolution)));
@@ -84,7 +86,7 @@ const main = async () => {
     for (;;) {
       let answer;
       try {
-        answer = (await rl.question(`  ${green('[a]ccept')} / ${yellow('[f]eedback')} (propose again) / ${cyan('[e]dit')} (type it yourself) / ${red('[s]kip')} file > `)).trim().toLowerCase();
+        answer = (await rl.question(`  ${green('[a]ccept')} / ${yellow('[f]eedback')} (propose again) / ${cyan('[e]dit')} (type it yourself) / ${red('[s]kip')} this conflict > `)).trim().toLowerCase();
       } catch {
         console.log(gray('\n  input closed, treating as skip'));
         return { action: 'reject' };
@@ -167,7 +169,8 @@ const main = async () => {
     if (files.length === 0) console.log(gray('  No conflicted files found.'));
     for (const f of files) {
       const status = statusColor(f.status)(f.status.padEnd(13));
-      console.log(`  ${status} ${f.file}${f.reason ? gray(`  (${f.reason})`) : ''}`);
+      const left = f.remaining ? gray(`  (${f.remaining} conflict${f.remaining === 1 ? '' : 's'} still in the file)`) : '';
+      console.log(`  ${status} ${f.file}${left}${f.reason ? gray(`  (${f.reason})`) : ''}`);
     }
 
     if (validation.steps.length > 0) {

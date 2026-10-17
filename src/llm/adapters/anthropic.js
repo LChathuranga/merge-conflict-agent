@@ -43,14 +43,17 @@ export const fromAnthropicContent = (content = []) => ({
 export const createAnthropicAdapter = (config) => {
   const client = new Anthropic({ apiKey: config.apiKey });
 
-  const chat = async ({ system, messages, tools }) => {
-    const response = await client.messages.create({
-      model: config.model,
-      max_tokens: config.maxTokens || DEFAULT_MAX_TOKENS,
-      system,
-      messages: toAnthropicMessages(messages),
-      ...(tools?.length ? { tools: toAnthropicTools(tools) } : {}),
-    });
+  const chat = async ({ system, messages, tools, signal }) => {
+    const response = await client.messages.create(
+      {
+        model: config.model,
+        max_tokens: config.maxTokens || DEFAULT_MAX_TOKENS,
+        system,
+        messages: toAnthropicMessages(messages),
+        ...(tools?.length ? { tools: toAnthropicTools(tools) } : {}),
+      },
+      signal ? { signal } : undefined
+    );
     return fromAnthropicContent(response.content);
   };
 

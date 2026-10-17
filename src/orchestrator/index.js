@@ -1,12 +1,13 @@
 import { access, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { listConflictedFiles, readWorkingFile, stageFile } from '../git/index.js';
-import { parseConflictHunks, hasConflictMarkers } from '../conflict/parser.js';
+import { parseConflictHunks } from '../conflict/parser.js';
 import { applyResolutions } from '../conflict/apply.js';
 import { proposeResolution } from '../agents/conflictAgent.js';
 import { validateRepo } from '../agents/validationAgent.js';
 import { determineIntent } from '../agents/intentAgent.js';
 import { createReadOnlyTools, selectTools } from '../tools/readOnlyTools.js';
+import { createAbortError, isAbort, raceAbort, rethrowIfAborted, throwIfAborted } from '../util/abort.js';
 import { defaultReferenceAgent, isTestFile } from '../agents/referenceAgent.js';
 
 // The Intent Agent only needs history and docs, not code search.
@@ -26,7 +27,7 @@ const existingFiles = async (cwd, files) => {
 // approve({ file, hunk, proposal, attempt }) ->
 //   { action: 'accept' | 'reject' | 'edit' | 'retry', resolution?, feedback? }
 // 'retry' sends `feedback` back to the model for a new proposal (up to maxAttempts per hunk).
-export const resolveConflicts = async ({
+const run = async ({
   cwd,
   llm,
   approve,
@@ -44,9 +45,12 @@ export const resolveConflicts = async ({
   validate = false,
   validator = validateRepo,
   dryRun = false,
-}) => {
-  const files = await listConflictedFiles(cwd);
-  const results = [];
+  signal,
+  onlyFiles = null,
+}, results) => {
+  throwIfAborted(signal);
+  const wanted = onlyFiles ? new Set(onlyFiles) : null;
+  const files = (await listConflictedFiles(cwd)).filter((f) => !wanted || wanted.has(f));
 
   // Read-only tools the model may call (opt-in). If the model or server turns out not to
   // support tool calling, the first failure switches them off for the rest of the run.
@@ -64,6 +68,7 @@ export const resolveConflicts = async ({
     try {
       return await fn();
     } catch (error) {
+      rethrowIfAborted(error, signal);
       if (!referencesWarned) {
         referencesWarned = true;
         onEvent({ type: 'references-unavailable', reason: error.message });
@@ -84,6 +89,7 @@ export const resolveConflicts = async ({
         tools: toolsEnabled ? selectTools(allTools, INTENT_TOOLS) : null,
         maxToolSteps,
         onToolEvent,
+        signal,
       });
       if (found) {
         intent = found.text;
@@ -92,11 +98,13 @@ export const resolveConflicts = async ({
         onEvent({ type: 'intent-unavailable', reason: 'no commit history found for this operation' });
       }
     } catch (error) {
+      rethrowIfAborted(error, signal);
       onEvent({ type: 'intent-unavailable', reason: error.message });
     }
   }
 
   for (const file of files) {
+    throwIfAborted(signal);
     const fileText = await readWorkingFile(cwd, file);
     const hunks = parseConflictHunks(fileText);
 
@@ -107,10 +115,11 @@ export const resolveConflicts = async ({
     }
 
     const accepted = [];
-    let rejected = false;
     let modelError = null;
 
-    for (const hunk of hunks) {
+    for (const [index, hunk] of hunks.entries()) {
+      throwIfAborted(signal);
+      const position = { index, total: hunks.length };
       // Each round the user turns down becomes context for the next proposal.
       const feedbackRounds = [];
       let proposal;
@@ -122,7 +131,7 @@ export const resolveConflicts = async ({
         : null;
 
       for (let attempt = 0; ; attempt += 1) {
-        onEvent({ type: 'proposing', file, hunk, attempt });
+        onEvent({ type: 'proposing', file, hunk, attempt, ...position });
         try {
           proposal = await proposeResolution({
             llm,
@@ -135,8 +144,10 @@ export const resolveConflicts = async ({
             tools: toolsEnabled ? allTools : null,
             maxToolSteps,
             onToolEvent,
+            signal,
           });
         } catch (error) {
+          rethrowIfAborted(error, signal);
           modelError = error.message;
           break;
         }
@@ -154,9 +165,11 @@ export const resolveConflicts = async ({
 
         // A revised proposal always goes back to the user: they asked for the change.
         const asksUser = proposal.needsApproval || reviewAll || attempt > 0;
-        onEvent({ type: 'proposed', file, hunk, proposal, asksUser, attempt });
+        onEvent({ type: 'proposed', file, hunk, proposal, asksUser, attempt, ...position });
 
-        decision = asksUser ? await approve({ file, hunk, proposal, attempt }) : { action: 'accept' };
+        decision = asksUser
+          ? await raceAbort(approve({ file, hunk, proposal, attempt, ...position }), signal)
+          : { action: 'accept' };
         if (decision.action !== 'retry') break;
 
         if (attempt + 1 >= maxAttempts) {
@@ -167,11 +180,13 @@ export const resolveConflicts = async ({
         feedbackRounds.push({ proposal, feedback: decision.feedback ?? '' });
       }
 
+      // A failing model is unlikely to recover for the next conflict: stop, keep what was accepted.
       if (modelError) break;
 
+      // Skipping one conflict leaves it (and only it) with its markers; the rest still get resolved.
       if (decision.action === 'reject') {
-        rejected = true;
-        break;
+        onEvent({ type: 'hunk-skipped', file, hunk, ...position });
+        continue;
       }
       // Text the user typed has not been assessed yet; check what it changes too.
       const assessment =
@@ -186,25 +201,29 @@ export const resolveConflicts = async ({
       });
     }
 
-    if (modelError) {
-      results.push({ file, status: 'failed', reason: `model error: ${modelError}` });
-      onEvent({ type: 'failed', file });
+    if (accepted.length === 0) {
+      if (modelError) {
+        results.push({ file, status: 'failed', reason: `model error: ${modelError}` });
+        onEvent({ type: 'failed', file });
+      } else {
+        results.push({ file, status: 'rejected' });
+        onEvent({ type: 'rejected', file });
+      }
       continue;
     }
 
-    if (rejected) {
-      results.push({ file, status: 'rejected' });
-      onEvent({ type: 'rejected', file });
-      continue;
-    }
-
+    // Whatever was accepted is written. The markers still in the file must be exactly the
+    // conflicts that were not accepted (skipped, or never reached); anything else is a bug.
     const resolvedText = applyResolutions(fileText, accepted);
-    if (hasConflictMarkers(resolvedText)) {
-      results.push({ file, status: 'failed', reason: 'conflict markers remain after applying resolutions' });
+    const remaining = hunks.length - accepted.length;
+    if (parseConflictHunks(resolvedText).length !== remaining) {
+      results.push({ file, status: 'failed', reason: 'the conflict markers left in the file do not match what was accepted' });
       onEvent({ type: 'failed', file });
       continue;
     }
+    const complete = remaining === 0;
 
+    throwIfAborted(signal);
     if (!dryRun) {
       await writeFile(path.join(cwd, file), resolvedText, 'utf8');
     }
@@ -230,17 +249,21 @@ export const resolveConflicts = async ({
     };
     onEvent({ type: 'file-impact', file, impact });
 
+    const status = complete
+      ? (dryRun ? 'would-resolve' : 'resolved')
+      : (dryRun ? 'would-partial' : 'partial');
     results.push({
       file,
-      status: dryRun ? 'would-resolve' : 'resolved',
+      status,
       staged: false,
       impact,
+      ...(complete ? {} : { remaining, ...(modelError ? { reason: `model error: ${modelError}` } : {}) }),
       hunks: accepted.map(({ proposal }) => ({
         confidence: proposal.confidence,
         explanation: proposal.explanation,
       })),
     });
-    onEvent({ type: 'resolved', file });
+    onEvent({ type: complete ? 'resolved' : 'partial', file, remaining });
   }
 
   const resolved = results.filter((r) => r.status === 'resolved');
@@ -254,7 +277,9 @@ export const resolveConflicts = async ({
     if (!allResolved) {
       notValidatedReason = 'some files are still unresolved, so the repository cannot be validated';
     } else {
-      validation = await validator({ cwd, onEvent, focusedTests: await existingFiles(cwd, [...focusedTests]) });
+      throwIfAborted(signal);
+      validation = await validator({ cwd, onEvent, signal, focusedTests: await existingFiles(cwd, [...focusedTests]) });
+      if (validation.cancelled) throw createAbortError();
       onEvent({ type: 'validated', validation });
       if (!validation.ran) notValidatedReason = 'no validation commands found';
     }
@@ -274,4 +299,17 @@ export const resolveConflicts = async ({
   }
 
   return { files: results, validation, notValidatedReason, stageBlockedReason };
+};
+
+// Resolves the conflicted files of a repository. Cancelling through `signal` rejects with an
+// AbortError whose `results` holds the files already handled (they stay written on disk).
+//   onlyFiles: restrict the run to these repo-relative paths.
+export const resolveConflicts = async (options) => {
+  const results = [];
+  try {
+    return await run(options, results);
+  } catch (error) {
+    if (options.signal?.aborted || isAbort(error)) throw createAbortError('Cancelled', results);
+    throw error;
+  }
 };

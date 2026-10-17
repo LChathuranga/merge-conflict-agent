@@ -19,6 +19,8 @@ export const confidenceColor = (level) =>
 export const statusColor = (status) =>
   ({
     resolved: green,
+    partial: yellow,
+    'would-partial': cyan,
     passed: green,
     'would-resolve': cyan,
     rejected: yellow,

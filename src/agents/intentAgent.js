@@ -91,7 +91,7 @@ export const formatIntent = ({ operation, ours, theirs, relationship }) =>
   ].join('\n');
 
 // tools: optional read-only tools (for example git_show) to look closer at a commit.
-export const summarizeIntent = async ({ llm, evidence, tools = null, maxToolSteps, onToolEvent }) => {
+export const summarizeIntent = async ({ llm, evidence, tools = null, maxToolSteps, onToolEvent, signal }) => {
   const { text: raw } = await askWithOptionalTools({
     llm,
     system: SYSTEM_PROMPT,
@@ -100,6 +100,7 @@ export const summarizeIntent = async ({ llm, evidence, tools = null, maxToolStep
     maxSteps: maxToolSteps,
     agent: 'Intent Agent',
     onToolEvent,
+    signal,
   });
   const data = parseJsonObject(raw, 'Intent Agent');
 
@@ -113,10 +114,10 @@ export const summarizeIntent = async ({ llm, evidence, tools = null, maxToolStep
 };
 
 // Null when there is nothing to learn from (no operation in progress, or no commits on either side).
-export const determineIntent = async ({ llm, cwd, files, tools = null, maxToolSteps, onToolEvent }) => {
+export const determineIntent = async ({ llm, cwd, files, tools = null, maxToolSteps, onToolEvent, signal }) => {
   const evidence = await gatherIntentEvidence({ cwd, files });
   if (!evidence || (evidence.ours.commits.length === 0 && evidence.theirs.commits.length === 0)) {
     return null;
   }
-  return summarizeIntent({ llm, evidence, tools, maxToolSteps, onToolEvent });
+  return summarizeIntent({ llm, evidence, tools, maxToolSteps, onToolEvent, signal });
 };

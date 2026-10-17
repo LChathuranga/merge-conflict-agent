@@ -7,6 +7,7 @@ import { getCurrentBranch, grepWord } from '../git/index.js';
 import { isWorkingTreeClean, readFileAtRef, resolveCommit } from '../git/history.js';
 import { cherryPick, cherryPickNoCommit, createWorktree, linkDependencies, removeWorktree } from '../git/worktree.js';
 import { isCodeFile } from './diff.js';
+import { rethrowIfAborted, throwIfAborted } from '../util/abort.js';
 
 // Master of the cherry-pick preflight: gathers evidence, tries the pick in a throwaway
 // worktree, and reports one of four outcomes. It changes nothing in the user's repository;
@@ -60,27 +61,33 @@ export const findBrokenReferences = async ({ cwd, worktree, target, files }) => 
   return broken;
 };
 
-const simulate = async ({ cwd, sha, target, validate, validator, files, onEvent }) => {
+const simulate = async ({ cwd, sha, target, validate, validator, files, onEvent, signal }) => {
   const result = { status: 'skipped', conflicts: [], brokenReferences: [], validation: null, cleanedUp: true, dependenciesLinked: false };
   let worktree = null;
   try {
+    throwIfAborted(signal);
     worktree = await createWorktree(cwd, target);
     const pick = await cherryPickNoCommit(worktree, sha);
+    throwIfAborted(signal);
     Object.assign(result, { status: pick.status, conflicts: pick.conflicts, message: pick.message });
 
     if (pick.status === 'clean') {
       onEvent({ type: 'preflight-step', step: 'references' });
       result.brokenReferences = await findBrokenReferences({ cwd, worktree, target, files });
+      throwIfAborted(signal);
       if (validate) {
         result.dependenciesLinked = await linkDependencies(cwd, worktree);
         result.validation = await validator({
           cwd: worktree,
           onEvent,
+          signal,
           focusedTests: files.map((f) => f.path).filter(isTestFile),
         });
       }
     }
   } catch (error) {
+    // Cancelling is not a failed trial pick. The worktree is still removed by the finally below.
+    rethrowIfAborted(error, signal);
     result.status = 'error';
     result.message = error.message;
   } finally {
@@ -141,15 +148,17 @@ export const decideOutcome = ({ evidence, simulation, validate }) => {
   return { outcome, findings };
 };
 
-export const runPreflight = async ({ cwd, commit, target = 'HEAD', validate = false, validator = validateRepo, onEvent = () => {} }) => {
+export const runPreflight = async ({ cwd, commit, target = 'HEAD', validate = false, validator = validateRepo, onEvent = () => {}, signal }) => {
+  throwIfAborted(signal);
   const sha = await resolveCommit(cwd, commit);
   await resolveCommit(cwd, target);
 
   const evidence = await analyzeDependencies({ cwd, sha, target, onEvent });
+  throwIfAborted(signal);
   let simulation = null;
   if (!evidence.isMerge && !evidence.alreadyApplied) {
     onEvent({ type: 'preflight-step', step: 'simulate' });
-    simulation = await simulate({ cwd, sha, target, validate, validator, files: evidence.files, onEvent });
+    simulation = await simulate({ cwd, sha, target, validate, validator, files: evidence.files, onEvent, signal });
   }
 
   const { outcome, findings } = decideOutcome({ evidence, simulation, validate });

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { detectValidationCommands, runValidation } from '../src/agents/validationAgent.js';
@@ -10,7 +11,7 @@ const makeDir = (files = {}) => {
   Object.entries(files).forEach(([name, content]) => writeFileSync(path.join(dir, name), content));
   return dir;
 };
-const cleanup = (dir) => rmSync(dir, { recursive: true, force: true });
+const cleanup = (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 });
 
 test('detects checks from package.json in test, typecheck, lint, build order', async () => {
   const dir = makeDir({
@@ -126,8 +127,87 @@ test('runValidation fails a command that exceeds the timeout, and never passes w
     assert.equal(slow.steps[0].timedOut, true);
 
     const none = await runValidation({ cwd: dir, commands: [] });
-    assert.deepEqual(none, { ran: false, passed: false, steps: [] });
+    assert.deepEqual(none, { ran: false, passed: false, cancelled: false, steps: [] });
   } finally {
+    cleanup(dir);
+  }
+});
+
+// A process that cannot be killed (a stuck grandchild still holding its output open) used to
+// leave the run waiting forever. These simulate it with a kill that does nothing.
+// The refused kill remembers the process; the test ends it for real afterwards, because a process
+// left running keeps its folder open and Windows then refuses to delete it.
+const refusedKills = [];
+const NO_KILL = async (child) => { refusedKills.push(child.pid); };
+const killForReal = () => {
+  for (const pid of refusedKills.splice(0)) {
+    try {
+      if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      else process.kill(-pid, 'SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+};
+const SLEEPS_20S = 'node -e "setTimeout(() => {}, 20000)"';
+
+test('a check that cannot be killed after a cancel is abandoned after the grace period, not waited for', { timeout: 60000 }, async () => {
+  const dir = makeDir();
+  try {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 300);
+    const started = Date.now();
+    const result = await runValidation({
+      cwd: dir, signal: controller.signal, killTree: NO_KILL, killGraceMs: 400,
+      commands: [{ name: 'stuck', command: SLEEPS_20S }, { name: 'later', command: 'node -e "process.exit(0)"' }],
+    });
+    assert.ok(Date.now() - started < 10000, 'it did not wait for the 20 second process');
+    assert.deepEqual(result.steps.map((s) => s.status), ['cancelled', 'skipped']);
+    assert.equal(result.cancelled, true);
+    assert.match(result.steps[0].output, /did not end after being stopped, so it was abandoned/);
+  } finally {
+    killForReal();
+    cleanup(dir);
+  }
+});
+
+test('a check that cannot be killed after a timeout is reported as timed out and abandoned', { timeout: 60000 }, async () => {
+  const dir = makeDir();
+  try {
+    const started = Date.now();
+    const result = await runValidation({
+      cwd: dir, timeoutMs: 300, killTree: NO_KILL, killGraceMs: 400,
+      commands: [{ name: 'stuck', command: SLEEPS_20S }],
+    });
+    assert.ok(Date.now() - started < 10000);
+    assert.equal(result.passed, false);
+    assert.equal(result.steps[0].status, 'failed');
+    assert.equal(result.steps[0].timedOut, true);
+    assert.match(result.steps[0].output, /abandoned/);
+  } finally {
+    killForReal();
+    cleanup(dir);
+  }
+});
+
+test('a kill that throws still ends the step, and a normal exit never waits for the grace period', { timeout: 60000 }, async () => {
+  const dir = makeDir();
+  try {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    const exploding = await runValidation({
+      cwd: dir, signal: controller.signal, killGraceMs: 300,
+      killTree: async (child) => { refusedKills.push(child.pid); throw new Error('taskkill is not available'); },
+      commands: [{ name: 'stuck', command: SLEEPS_20S }],
+    });
+    assert.equal(exploding.steps[0].status, 'cancelled');
+
+    const started = Date.now();
+    const quick = await runValidation({ cwd: dir, killGraceMs: 60000, commands: [{ name: 'ok', command: 'node -e "process.exit(0)"' }] });
+    assert.equal(quick.passed, true);
+    assert.ok(Date.now() - started < 15000, 'a finished check does not wait for the 60 second grace period');
+  } finally {
+    killForReal();
     cleanup(dir);
   }
 });

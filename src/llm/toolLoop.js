@@ -6,6 +6,9 @@
 //   { role: 'tool', toolCallId, name, content }
 // The model only ever *requests* calls; this code decides to run them, and the tools
 // themselves are read-only. Every call is reported through onToolCall.
+// An aborted `signal` stops the loop at the next step and is never treated as a tool failure.
+
+import { rethrowIfAborted, throwIfAborted } from '../util/abort.js';
 
 const DEFAULT_MAX_STEPS = 8;
 const DEFAULT_MAX_RESULT_CHARS = 6000;
@@ -33,6 +36,7 @@ export const runToolLoop = async ({
   maxSteps = DEFAULT_MAX_STEPS,
   maxResultChars = DEFAULT_MAX_RESULT_CHARS,
   onToolCall = () => {},
+  signal,
 }) => {
   if (typeof llm.chat !== 'function') throw new Error('this LLM adapter does not support tool calling');
 
@@ -76,16 +80,18 @@ export const runToolLoop = async ({
   };
 
   for (let step = 0; step <= maxSteps; step += 1) {
+    throwIfAborted(signal);
     const toolsAllowed = step < maxSteps;
     if (!toolsAllowed) conversation.push({ role: 'user', content: NO_TOOLS_LEFT });
 
-    const reply = await llm.chat({ system, messages: conversation, tools: toolsAllowed ? tools : undefined });
+    const reply = await llm.chat({ system, messages: conversation, tools: toolsAllowed ? tools : undefined, signal });
     const requested = toolsAllowed ? reply.toolCalls ?? [] : [];
     if (requested.length === 0) return { text: reply.text ?? '', calls };
 
     conversation.push({ role: 'assistant', content: reply.text ?? '', toolCalls: requested });
     // Every requested call needs an answer, even the ones we refuse to run.
     for (const [index, call] of requested.entries()) {
+      throwIfAborted(signal);
       const content = await execute(call, index < MAX_CALLS_PER_TURN);
       conversation.push({ role: 'tool', toolCallId: call.id, name: call.name, content });
     }
@@ -96,7 +102,7 @@ export const runToolLoop = async ({
 
 // One model request that uses tools when it can and quietly falls back to a plain request
 // when the provider or model rejects them (many local models cannot call tools).
-export const askWithOptionalTools = async ({ llm, system, messages, tools, maxSteps, agent, onToolEvent = () => {} }) => {
+export const askWithOptionalTools = async ({ llm, system, messages, tools, maxSteps, agent, onToolEvent = () => {}, signal }) => {
   if (tools?.length) {
     try {
       const { text, calls } = await runToolLoop({
@@ -106,12 +112,16 @@ export const askWithOptionalTools = async ({ llm, system, messages, tools, maxSt
         tools,
         maxSteps,
         onToolCall: (call) => onToolEvent({ type: 'tool-call', agent, ...call }),
+        signal,
       });
       return { text, calls, toolsFailed: false };
     } catch (error) {
+      // Cancelling is not "this model cannot use tools": no fallback request, no disabling.
+      rethrowIfAborted(error, signal);
       onToolEvent({ type: 'tools-unavailable', agent, reason: error.message });
     }
   }
-  const text = await llm.complete({ system, messages, json: true });
+  throwIfAborted(signal);
+  const text = await llm.complete({ system, messages, json: true, signal });
   return { text, calls: [], toolsFailed: Boolean(tools?.length) };
 };

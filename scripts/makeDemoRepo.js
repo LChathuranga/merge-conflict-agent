@@ -1,12 +1,18 @@
 // Builds a throwaway git repo that is mid-merge with three conflicts of rising difficulty.
-// Usage: node scripts/makeDemoRepo.js [targetDir]   (targetDir must not exist or be empty)
+// Usage: node scripts/makeDemoRepo.js [targetDir] [--no-merge]
+//   targetDir must not exist or be empty.
+//   --no-merge stops before merging, leaving `main` and `feature` ready for a merge started from the UI.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const target = process.argv[2]
-  ? path.resolve(process.argv[2])
+const args = process.argv.slice(2);
+const startMerge = !args.includes('--no-merge');
+const [targetArg] = args.filter((a) => !a.startsWith('--'));
+
+const target = targetArg
+  ? path.resolve(targetArg)
   : mkdtempSync(path.join(tmpdir(), 'merge-conflict-demo-'));
 
 if (existsSync(target) && readdirSync(target).length > 0) {
@@ -112,6 +118,13 @@ git('checkout', '-q', '-b', 'feature');
 commitAll(THEIRS, 'feature: retries, discount, longer sessions');
 git('checkout', '-q', 'main');
 commitAll(OURS, 'main: longer timeout, tax, shorter sessions');
+
+if (!startMerge) {
+  console.log(`Demo repo created at:\n  ${target}\n`);
+  console.log('You are on main, and `feature` conflicts with it in 3 files. Open this folder in VS Code');
+  console.log('and start the merge from the Merge Assistant view (or run: git merge feature).');
+  process.exit(0);
+}
 
 try {
   git('merge', 'feature');

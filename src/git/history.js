@@ -7,7 +7,7 @@ import { SENSITIVE_EXCLUDES } from './sensitive.js';
 
 const SAFE_REF = /^[\w][\w./@{}^~:+-]*$/;
 
-const requireRef = (ref, what = 'ref') => {
+export const requireRef = (ref, what = 'ref') => {
   if (typeof ref !== 'string' || !SAFE_REF.test(ref) || ref.includes('..')) {
     throw new Error(`${what} must be a commit sha or a branch/tag name (got "${ref}")`);
   }

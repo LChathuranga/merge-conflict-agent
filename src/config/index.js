@@ -1,10 +1,5 @@
-import dotenv from 'dotenv';
-import { fileURLToPath } from 'node:url';
-
-// Load the .env that lives next to the tool, not the one in the caller's cwd,
-// so the command works from inside any repository. Real env vars still win.
-dotenv.config({ path: fileURLToPath(new URL('../../.env', import.meta.url)) });
-
+// Pure: validates an env-like object. It never reads .env or process.env on its own
+// (callers pass the values), so it is safe to bundle into an editor extension.
 const VALID_PROVIDERS = ['openai', 'anthropic', 'ollama'];
 const OLLAMA_DEFAULT_BASE_URL = 'http://localhost:11434/v1';
 

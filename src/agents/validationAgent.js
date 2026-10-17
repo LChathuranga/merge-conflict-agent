@@ -85,11 +85,23 @@ const killProcessTree = (child) =>
     resolve();
   });
 
-const runStep = ({ cwd, name, command, timeoutMs }) =>
+// After a kill, wait this long for the process to report that it ended; if it never does
+// (a stuck grandchild still holds its output open), stop waiting rather than hang the run.
+const DEFAULT_KILL_GRACE_MS = 5000;
+
+const runStep = ({ cwd, name, command, timeoutMs, signal, killTree = killProcessTree, killGraceMs = DEFAULT_KILL_GRACE_MS }) =>
   new Promise((resolve) => {
     const started = Date.now();
     let output = '';
     let timedOut = false;
+    let cancelled = false;
+    let done = false;
+    let graceTimer = null;
+
+    if (signal?.aborted) {
+      resolve({ name, command, status: 'cancelled', durationMs: 0, output: '' });
+      return;
+    }
 
     const child = spawn(command, {
       cwd,
@@ -106,23 +118,45 @@ const runStep = ({ cwd, name, command, timeoutMs }) =>
     child.stdout.on('data', collect);
     child.stderr.on('data', collect);
 
-    const timer = setTimeout(async () => {
-      timedOut = true;
-      await killProcessTree(child);
-    }, timeoutMs);
-
     const finish = (exitCode, extra = '') => {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
-      const passed = exitCode === 0 && !timedOut;
+      clearTimeout(graceTimer);
+      signal?.removeEventListener('abort', onAbort);
+      const passed = exitCode === 0 && !timedOut && !cancelled;
       resolve({
         name,
         command,
-        status: passed ? 'passed' : 'failed',
-        ...(passed ? {} : { exitCode, timedOut }),
+        status: cancelled ? 'cancelled' : passed ? 'passed' : 'failed',
+        ...(passed || cancelled ? {} : { exitCode, timedOut }),
         durationMs: Date.now() - started,
         output: tail(`${output}${extra}`),
       });
     };
+
+    // Kill the whole tree, then make sure this step ends even if the process never reports it.
+    const stop = () => {
+      Promise.resolve(killTree(child)).catch(() => {}).finally(() => {
+        if (done) return;
+        graceTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(null, '\n(the process did not end after being stopped, so it was abandoned)');
+        }, killGraceMs);
+      });
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
+    }, timeoutMs);
+
+    const onAbort = () => {
+      cancelled = true;
+      stop();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     child.on('error', (error) => finish(null, error.message));
     child.on('close', (code) => finish(code));
@@ -130,9 +164,11 @@ const runStep = ({ cwd, name, command, timeoutMs }) =>
 
 // Runs commands in order and stops at the first failure (later steps are marked skipped).
 // `passed` is only true when at least one command ran and all of them succeeded.
-export const runValidation = async ({ cwd, commands, onEvent = () => {}, timeoutMs = DEFAULT_TIMEOUT_MS }) => {
+// killTree / killGraceMs exist so tests can simulate a process that refuses to die.
+export const runValidation = async ({ cwd, commands, onEvent = () => {}, timeoutMs = DEFAULT_TIMEOUT_MS, signal, killTree, killGraceMs }) => {
   const steps = [];
   let failed = false;
+  let cancelled = false;
 
   for (const { name, command } of commands) {
     if (failed) {
@@ -140,12 +176,13 @@ export const runValidation = async ({ cwd, commands, onEvent = () => {}, timeout
       continue;
     }
     onEvent({ type: 'validating', name, command });
-    const step = await runStep({ cwd, name, command, timeoutMs });
+    const step = await runStep({ cwd, name, command, timeoutMs, signal, killTree, killGraceMs });
     steps.push(step);
-    if (step.status === 'failed') failed = true;
+    if (step.status === 'cancelled') cancelled = true;
+    if (step.status === 'failed' || step.status === 'cancelled') failed = true;
   }
 
-  return { ran: commands.length > 0, passed: commands.length > 0 && !failed, steps };
+  return { ran: commands.length > 0 && steps.some((s) => s.status !== 'skipped' && s.status !== 'cancelled'), passed: commands.length > 0 && !failed, cancelled, steps };
 };
 
 const SAFE_TEST_PATH = /^[\w@.\/ +-]+$/;
@@ -169,9 +206,11 @@ export const detectFocusedTestCommand = async (cwd, testFiles) => {
   return null;
 };
 
+// The checks that would run, in order, without running them. Callers that ask the user first
+// show exactly this list and then run exactly this list.
 // focusedTests: test files affected by the resolution. They run first so a break fails fast,
 // before the full suite. Skipped when the repo spelled out its own commands in .merge-agent.json.
-export const validateRepo = async ({ cwd, onEvent, focusedTests = [] }) => {
+export const planValidation = async ({ cwd, focusedTests = [] }) => {
   const { source, commands } = await detectValidationCommands(cwd);
 
   let all = commands;
@@ -179,7 +218,11 @@ export const validateRepo = async ({ cwd, onEvent, focusedTests = [] }) => {
     const command = await detectFocusedTestCommand(cwd, focusedTests);
     if (command) all = [{ name: 'focused tests', command }, ...commands];
   }
+  return { source, commands: all };
+};
 
-  const result = await runValidation({ cwd, commands: all, onEvent });
+export const validateRepo = async ({ cwd, onEvent, focusedTests = [], signal }) => {
+  const { source, commands } = await planValidation({ cwd, focusedTests });
+  const result = await runValidation({ cwd, commands, onEvent, signal });
   return { ...result, source };
 };

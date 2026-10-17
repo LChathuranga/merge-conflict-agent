@@ -62,17 +62,20 @@ export const createOpenAIAdapter = (config) => {
   });
 
   // chat() returns { text, toolCalls } and accepts tools; complete() is the text-only shortcut.
-  const chat = async ({ system, messages, json = false, tools }) => {
-    const response = await client.chat.completions.create({
-      model: config.model,
-      messages: toOpenAIMessages(system, messages),
-      ...(tools?.length ? { tools: toOpenAITools(tools) } : {}),
-      // JSON mode keeps small models from wrapping the reply in prose; temperature 0
-      // makes local-model merges repeatable (some hosted models reject it, so ollama only).
-      // It is left off while tools are offered, since the reply may be a tool request.
-      ...(json && config.jsonMode && !tools?.length ? { response_format: { type: 'json_object' } } : {}),
-      ...(config.provider === 'ollama' ? { temperature: 0 } : {}),
-    });
+  const chat = async ({ system, messages, json = false, tools, signal }) => {
+    const response = await client.chat.completions.create(
+      {
+        model: config.model,
+        messages: toOpenAIMessages(system, messages),
+        ...(tools?.length ? { tools: toOpenAITools(tools) } : {}),
+        // JSON mode keeps small models from wrapping the reply in prose; temperature 0
+        // makes local-model merges repeatable (some hosted models reject it, so ollama only).
+        // It is left off while tools are offered, since the reply may be a tool request.
+        ...(json && config.jsonMode && !tools?.length ? { response_format: { type: 'json_object' } } : {}),
+        ...(config.provider === 'ollama' ? { temperature: 0 } : {}),
+      },
+      signal ? { signal } : undefined
+    );
     return fromOpenAIMessage(response.choices[0]?.message);
   };
 

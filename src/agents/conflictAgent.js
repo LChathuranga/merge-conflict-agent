@@ -115,6 +115,7 @@ export const proposeResolution = async ({
   tools = null,
   maxToolSteps,
   onToolEvent,
+  signal,
 }) => {
   const messages = [{ role: 'user', content: buildPrompt({ file, fileText, hunk, intent, usages }) }];
   for (const { proposal: previous, feedback } of feedbackRounds) {
@@ -146,6 +147,7 @@ export const proposeResolution = async ({
       maxSteps: maxToolSteps,
       agent: 'Conflict Agent',
       onToolEvent,
+      signal,
     });
     if (answer.toolsFailed) activeTools = null;
     toolCalls.push(...answer.calls);
