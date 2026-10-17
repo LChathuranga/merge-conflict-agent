@@ -13,8 +13,11 @@
     "start": "node bin/cli.js",
     "demo": "node scripts/makeDemoRepo.js",
     "pretest": "node scripts/checkArchitecture.js",
-    "test": "node --test",
-    "demo:pick": "node scripts/makePickDemo.js"
+    "test": "node --test --test-concurrency=4 --test-timeout=600000",
+    "demo:pick": "node scripts/makePickDemo.js",
+    "ext:install": "npm --prefix extension install",
+    "ext:build": "npm --prefix extension run build",
+    "ext:package": "npm --prefix extension run package"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

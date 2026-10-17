@@ -1,0 +1,380 @@
+{
+  "name": "merge-assistant",
+  "displayName": "Merge Assistant",
+  "description": "Start a merge, see the conflicts, and resolve them with an AI model you control. Every uncertain change is shown as a diff for your approval. Nothing is staged unless you ask, and nothing is ever committed for you.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:.git"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Merge Assistant runs the repository's own test and build scripts and sends code to a language model, so it is only available in trusted workspaces."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Merge Assistant needs a local Git repository."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mergeAssistant",
+          "title": "Merge Assistant",
+          "icon": "media/merge.svg"
+        }
+      ]
+    },
+    "views": {
+      "mergeAssistant": [
+        {
+          "id": "mergeAssistant.steps",
+          "name": "Guided merge"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "mergeAssistant.setUpModel",
+        "title": "Set Up AI Model...",
+        "category": "Merge Assistant",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "mergeAssistant.testModel",
+        "title": "Test AI Model Connection",
+        "category": "Merge Assistant",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "mergeAssistant.mergeBranch",
+        "title": "Merge a Branch...",
+        "category": "Merge Assistant",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "mergeAssistant.resolveAll",
+        "title": "Resolve Conflicts with AI",
+        "category": "Merge Assistant",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "mergeAssistant.resolveFile",
+        "title": "Resolve This File with AI",
+        "category": "Merge Assistant",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "mergeAssistant.runChecks",
+        "title": "Run Checks...",
+        "category": "Merge Assistant",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "mergeAssistant.stageResolved",
+        "title": "Stage Resolved Files...",
+        "category": "Merge Assistant",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "mergeAssistant.checkCherryPick",
+        "title": "Check Cherry-pick...",
+        "category": "Merge Assistant",
+        "icon": "$(git-pull-request-go-to-changes)"
+      },
+      {
+        "command": "mergeAssistant.abortMerge",
+        "title": "Abort Merge",
+        "category": "Merge Assistant",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "mergeAssistant.refresh",
+        "title": "Refresh",
+        "category": "Merge Assistant",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mergeAssistant.cancel",
+        "title": "Cancel Running Task",
+        "category": "Merge Assistant",
+        "icon": "$(stop-circle)"
+      },
+      {
+        "command": "mergeAssistant.chooseRepository",
+        "title": "Choose Repository...",
+        "category": "Merge Assistant"
+      },
+      {
+        "command": "mergeAssistant.openConflict",
+        "title": "Open Conflict",
+        "category": "Merge Assistant"
+      },
+      {
+        "command": "mergeAssistant.setApiKey",
+        "title": "Set API Key...",
+        "category": "Merge Assistant"
+      },
+      {
+        "command": "mergeAssistant.clearApiKey",
+        "title": "Clear API Key...",
+        "category": "Merge Assistant"
+      },
+      {
+        "command": "mergeAssistant.showOutput",
+        "title": "Show Log",
+        "category": "Merge Assistant"
+      },
+      {
+        "command": "mergeAssistant.changeTheme",
+        "title": "Change Color Theme...",
+        "category": "Merge Assistant",
+        "icon": "$(symbol-color)"
+      }
+    ],
+    "configuration": {
+      "title": "Merge Assistant",
+      "properties": {
+        "mergeAssistant.provider": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "openai",
+            "anthropic"
+          ],
+          "default": "ollama",
+          "description": "Which model provider resolves conflicts. Easiest to change with \"Merge Assistant: Set Up AI Model\", which also checks that it works. Ollama runs on your machine; OpenAI and Anthropic send the conflicting code to their servers."
+        },
+        "mergeAssistant.model": {
+          "type": "string",
+          "default": "llama3.1",
+          "description": "Model name, for example llama3.1, gpt-4o-mini or a Claude model id. \"Merge Assistant: Set Up AI Model\" lists the models you can use."
+        },
+        "mergeAssistant.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional. Point an OpenAI-compatible provider at another server (LM Studio, Groq, a company gateway). Leave empty for the provider's default. Ollama defaults to http://localhost:11434/v1. API keys are never stored in settings: use \"Merge Assistant: Set Up AI Model\". When the extension runs in a remote window (WSL, SSH, container), localhost means that remote machine."
+        },
+        "mergeAssistant.jsonMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask the server for strictly JSON replies. Turn off for OpenAI-compatible servers that reject it."
+        },
+        "mergeAssistant.useIntent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read commit messages from both branches to explain why each side changed."
+        },
+        "mergeAssistant.useReferences": {
+          "type": "boolean",
+          "default": true,
+          "description": "Search the repository for other uses of the names a conflict changes, so dropped or changed names are flagged."
+        },
+        "mergeAssistant.useTools": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Let the model call read-only tools (read files, search, git history) while it works. **What it reads is sent to the model provider.** Many small local models cannot use tools."
+        },
+        "mergeAssistant.maxAttempts": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many times the model may re-propose a conflict after you give feedback."
+        }
+      }
+    },
+    "viewsWelcome": [
+      {
+        "view": "mergeAssistant.steps",
+        "contents": "Open a folder that contains a Git repository to use Merge Assistant.\n[Open Folder](command:vscode.openFolder)",
+        "when": "!mergeAssistant.hasRepo"
+      },
+      {
+        "view": "mergeAssistant.steps",
+        "contents": "Another Git operation (a rebase, cherry-pick or revert) is in progress. Finish or abort it before starting a merge here.",
+        "when": "mergeAssistant.hasRepo && mergeAssistant.otherOperation"
+      },
+      {
+        "view": "mergeAssistant.steps",
+        "contents": "No merge in progress.\nMerge a branch into the current one, then resolve any conflicts here, step by step. Merge Assistant never stages or commits for you.\n[Merge a Branch...](command:mergeAssistant.mergeBranch)\n[Set Up AI Model...](command:mergeAssistant.setUpModel)",
+        "when": "mergeAssistant.hasRepo && !mergeAssistant.mergeInProgress && !mergeAssistant.otherOperation"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mergeAssistant.setUpModel",
+          "when": "view == mergeAssistant.steps && !mergeAssistant.modelReady",
+          "group": "navigation@0"
+        },
+        {
+          "command": "mergeAssistant.mergeBranch",
+          "when": "view == mergeAssistant.steps && mergeAssistant.hasRepo && !mergeAssistant.mergeInProgress && !mergeAssistant.otherOperation && !mergeAssistant.busy",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mergeAssistant.resolveAll",
+          "when": "view == mergeAssistant.steps && mergeAssistant.mergeInProgress && mergeAssistant.hasConflicts && !mergeAssistant.busy",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mergeAssistant.runChecks",
+          "when": "view == mergeAssistant.steps && mergeAssistant.mergeInProgress && !mergeAssistant.hasConflicts && !mergeAssistant.busy",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mergeAssistant.cancel",
+          "when": "view == mergeAssistant.steps && mergeAssistant.busy",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mergeAssistant.refresh",
+          "when": "view == mergeAssistant.steps && mergeAssistant.hasRepo",
+          "group": "navigation@9"
+        },
+        {
+          "command": "mergeAssistant.abortMerge",
+          "when": "view == mergeAssistant.steps && mergeAssistant.mergeInProgress && !mergeAssistant.busy",
+          "group": "1_merge@1"
+        },
+        {
+          "command": "mergeAssistant.chooseRepository",
+          "when": "view == mergeAssistant.steps",
+          "group": "2_settings@1"
+        },
+        {
+          "command": "mergeAssistant.setApiKey",
+          "when": "view == mergeAssistant.steps",
+          "group": "2_settings@2"
+        },
+        {
+          "command": "mergeAssistant.clearApiKey",
+          "when": "view == mergeAssistant.steps",
+          "group": "2_settings@3"
+        },
+        {
+          "command": "mergeAssistant.showOutput",
+          "when": "view == mergeAssistant.steps",
+          "group": "3_log@1"
+        },
+        {
+          "command": "mergeAssistant.checkCherryPick",
+          "when": "view == mergeAssistant.steps && mergeAssistant.hasRepo && !mergeAssistant.busy",
+          "group": "1_merge@2"
+        },
+        {
+          "command": "mergeAssistant.changeTheme",
+          "when": "view == mergeAssistant.steps",
+          "group": "navigation@10"
+        },
+        {
+          "command": "mergeAssistant.stageResolved",
+          "when": "view == mergeAssistant.steps && mergeAssistant.mergeInProgress && mergeAssistant.hasStageable && !mergeAssistant.busy",
+          "group": "navigation@4"
+        },
+        {
+          "command": "mergeAssistant.setUpModel",
+          "when": "view == mergeAssistant.steps",
+          "group": "2_settings@0"
+        },
+        {
+          "command": "mergeAssistant.testModel",
+          "when": "view == mergeAssistant.steps",
+          "group": "2_settings@0.5"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mergeAssistant.abortMerge",
+          "when": "view == mergeAssistant.steps && viewItem == mergeStep && !mergeAssistant.busy",
+          "group": "inline"
+        },
+        {
+          "command": "mergeAssistant.resolveFile",
+          "when": "view == mergeAssistant.steps && viewItem == conflictFile && !mergeAssistant.busy",
+          "group": "inline"
+        },
+        {
+          "command": "mergeAssistant.resolveAll",
+          "when": "view == mergeAssistant.steps && viewItem == conflictsStep && mergeAssistant.hasConflicts && !mergeAssistant.busy",
+          "group": "inline"
+        },
+        {
+          "command": "mergeAssistant.runChecks",
+          "when": "view == mergeAssistant.steps && viewItem == validateStep && mergeAssistant.mergeInProgress && !mergeAssistant.hasConflicts && !mergeAssistant.busy",
+          "group": "inline"
+        },
+        {
+          "command": "mergeAssistant.resolveAll",
+          "when": "view == mergeAssistant.steps && viewItem == reviewStep && mergeAssistant.hasConflicts && !mergeAssistant.busy",
+          "group": "inline"
+        },
+        {
+          "command": "mergeAssistant.stageResolved",
+          "when": "view == mergeAssistant.steps && viewItem == stageStep && mergeAssistant.mergeInProgress && mergeAssistant.hasStageable && !mergeAssistant.busy",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "mergeAssistant.openConflict",
+          "when": "false"
+        },
+        {
+          "command": "mergeAssistant.abortMerge",
+          "when": "mergeAssistant.mergeInProgress && !mergeAssistant.busy"
+        },
+        {
+          "command": "mergeAssistant.cancel",
+          "when": "mergeAssistant.busy"
+        },
+        {
+          "command": "mergeAssistant.resolveAll",
+          "when": "mergeAssistant.mergeInProgress && mergeAssistant.hasConflicts && !mergeAssistant.busy"
+        },
+        {
+          "command": "mergeAssistant.resolveFile",
+          "when": "false"
+        },
+        {
+          "command": "mergeAssistant.runChecks",
+          "when": "mergeAssistant.mergeInProgress && !mergeAssistant.hasConflicts && !mergeAssistant.busy"
+        },
+        {
+          "command": "mergeAssistant.checkCherryPick",
+          "when": "mergeAssistant.hasRepo && !mergeAssistant.busy"
+        },
+        {
+          "command": "mergeAssistant.stageResolved",
+          "when": "mergeAssistant.mergeInProgress && mergeAssistant.hasStageable && !mergeAssistant.busy"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "node esbuild.mjs --production && vsce package --no-dependencies --skip-license --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0"
+  }
+}

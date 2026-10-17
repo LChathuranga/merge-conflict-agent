@@ -5,7 +5,7 @@ A multi-agent Git assistant with two tools:
 - **`resolve-conflicts`** resolves merge conflicts with an LLM, keeps you in control of every uncertain decision, and refuses to stage anything until your repo's own checks pass.
 - **`cherry-pick-check`** tells you whether a commit is safe to cherry-pick *before* you change anything: what must already be on the target branch, and what a trial pick in a temporary worktree reveals.
 
-> **Status: learning project, CLI first.** The long-term goal is a VS Code extension. The core is deliberately UI-agnostic so the extension can reuse it. See [PLAN.md](PLAN.md) for the full design.
+> **Status: learning project.** Two command-line tools and a first version of a VS Code extension, all built on one UI-agnostic core. The extension is tested against a simulated editor and has not yet been tried by hand in a real VS Code window; see [VS Code extension](#vs-code-extension). See [PLAN.md](PLAN.md) for the original design.
 
 ## Why
 
@@ -14,7 +14,7 @@ A clean textual merge does not guarantee working code, and an LLM that "merges" 
 - It proposes a resolution for each conflict hunk.
 - Code-side safeguards flag proposals that look wrong, whatever the model claims.
 - You approve, give feedback, edit, or skip.
-- Nothing is staged until the repo's tests, lint, typecheck and build pass.
+- The CLI stages nothing until the repo's tests, lint, typecheck and build pass. The VS Code extension stages only when you click Stage and confirm.
 
 ## Requirements
 
@@ -80,7 +80,7 @@ Colors are used on terminals; set `NO_COLOR=1` to turn them off.
 - **accept**: use the proposal.
 - **feedback**: tell the model what to change ("keep both, timeout stays 60"). It sees its rejected attempt plus your comment and proposes again. A revised proposal always comes back to you. Up to 5 attempts per hunk.
 - **edit**: type the replacement yourself; finish with a line containing only `.`.
-- **skip**: leave the file conflicted for you to resolve by hand.
+- **skip**: leave this conflict as it was. The other conflicts in the same file are still resolved, so a file can end up partly resolved (the summary says how many conflicts are left).
 
 ## How it works
 
@@ -210,6 +210,28 @@ Every report lists the evidence, the files changed, the prerequisites, what the 
 
 Limits in this first version: one commit at a time (no ranges or merge commits), name and import analysis for JS/TS only, alias imports such as `@/utils` are not resolved, a prerequisite's own prerequisites are only found by checking it again after applying it, and no model is involved yet. Open pull requests are not checked, which is why a result is never a plain "safe".
 
+## VS Code extension
+
+The same core is available as a VS Code extension, **Merge Assistant** (in [extension/](extension/)): a sidebar that walks through Merge, Conflicts, Review and Validate.
+
+- **Start a merge** from the UI (`git merge --no-ff --no-commit`, with confirmation, a clean tree required and an Abort button). It never creates a commit.
+- **See the conflicts** as a list of files and conflicts, each opening at its line.
+- **Resolve with AI**: confident answers are applied; doubtful ones open a review page in the editor with ours, theirs and the proposal side by side (lines a side changed are marked as in the proposal or missing from it), then Accept, Give feedback (typed in the page; the model proposes again) or Skip this conflict. In a file with several conflicts, what you accept is kept when you skip another one. The run can be cancelled and finished files are kept.
+- **Run checks** after showing the exact commands first (a merge brings in code from another branch, which may have changed them).
+- **Set Up AI Model** is a guided wizard for choosing where the AI runs: Ollama on your computer, OpenAI, Claude, or another OpenAI-compatible server. It lists the models you can actually use (the ones you have downloaded, or that your key gives access to), takes your API key into VS Code's secret storage, and saves only after one real test request works; if it fails, it says why (key rejected, model not found, Ollama not running...). Each key is kept against its own server, so your OpenAI key can never be sent to some other address.
+- **Check Cherry-pick** gives the preflight report and can copy the `git cherry-pick` command. It never applies it.
+- **Never commits, and stages only on request.** Git keeps listing resolved files as conflicts until they are staged, so a **Stage Resolved Files** button marks the files it resolved (after you confirm the list and see what the checks said). You review and commit in Source Control.
+
+```bash
+npm run ext:install     # once: installs the extension's build tools
+npm run ext:build       # bundles the extension and the core into extension/dist
+npm run ext:package     # builds extension/merge-assistant-0.1.0.vsix
+```
+
+To try it without installing, open the `extension` folder in VS Code and press F5. To get a repository to merge, run `node scripts/makeDemoRepo.js <folder> --no-merge` and open that folder in the new window. Settings, privacy notes and limits are in [extension/README.md](extension/README.md).
+
+**How the code is split.** Only `src/ui/vscode/extension.js` imports the `vscode` module; every other file receives the editor API as a parameter, so it is tested with a fake editor. The sidebar state and tree (`src/ui/viewmodel/`) are plain functions with no editor dependency. API keys go in VS Code secret storage, and the extension never reads a `.env` file.
+
 ## Try it on a demo
 
 ```bash
@@ -241,15 +263,20 @@ src/agents/
   validationAgent.js        runs the repo's own checks (affected tests first)
 src/conflict/               conflict-marker parser and resolution applier
 src/git/                    thin wrappers around the git CLI (history queries, worktrees)
-src/llm/                    provider-agnostic client + OpenAI / Anthropic adapters, tool-call loop
+src/llm/                    provider-agnostic client + OpenAI / Anthropic adapters, tool-call loop,
+                            model listing (models.js) and the connection test (testConnection.js)
 src/tools/                  the read-only tools a model may call (with the repo sandbox)
-src/config/                 .env loading and validation
-src/ui/                     terminal colors (the only place VS Code code may live later)
+src/config/                 settings validation (the CLI-only .env loader is src/config/loadEnv.js)
+src/util/                   cancellation helpers (AbortSignal)
+src/ui/colors.js            terminal colors
+src/ui/viewmodel/           editor-independent sidebar state, tree, review and summary text
+src/ui/vscode/              VS Code glue (only extension.js imports `vscode`)
+extension/                  extension manifest, build script and README (bundles ../src)
 scripts/                    architecture check, demo repo generators
 test/                       node:test suite (uses real temporary git repos)
 ```
 
-`npm test` runs an architecture check first: no file outside `src/ui/` may import `vscode`, which keeps the core reusable for the extension.
+`npm test` runs an architecture check first: only `src/ui/vscode/` may import `vscode`, and `src/` may not use `import.meta` or `dotenv` outside `src/config/loadEnv.js` (they break when the core is bundled into the extension). That keeps the core reusable by both the CLI and the extension.
 
 ## Testing
 
@@ -274,7 +301,8 @@ Tests use fake models, so they need no API key and no network. Integration tests
 - [x] Dependency Agent and cherry-pick preflight (prerequisites, missing names, trial pick in a temporary worktree)
 - [ ] Preflight v2: commit ranges, merge commits, transitive prerequisites, more languages, model-assisted judgment of possible overlaps
 - [ ] Remote PR awareness (GitHub / GitLab / Bitbucket)
-- [ ] VS Code extension
+- [x] VS Code extension v0.1: guided merge, AI review in diffs, cancellable runs, checks, cherry-pick report, local `.vsix`
+- [ ] Try the extension by hand in VS Code and fix what that shows; then a `vscode.lm` (Copilot) provider, editing a proposal inside the diff, an SCM-view menu, and Marketplace publishing
 
 ## Known limitations
 
@@ -283,6 +311,7 @@ Tests use fake models, so they need no API key and no network. Integration tests
 - The "missing lines" safeguard is a text comparison, so it can flag a good merge that rewrites lines. It errs on the side of asking you.
 - Intent summaries are only as good as the commit messages, the only source used so far (more are planned, see [Intent sources](#intent-sources)).
 - Reference analysis only understands JS/TS declarations and is text based (see [Reference analysis](#reference-analysis)).
+- The VS Code extension has been tested against a simulated editor (and its packaged bundle is loaded and activated against a stub), but not yet used by hand in a real VS Code window, so layout, icons and the feel of the prompts are unverified.
 - Piping answers into the prompts (`printf 'a\n' | resolve-conflicts`) does not work; the prompts expect an interactive terminal.
 - Binary, delete and rename conflicts are reported and skipped.
 - Without remote PR access, results are based only on local repository state. The cherry-pick preflight therefore never reports a plain "safe".
