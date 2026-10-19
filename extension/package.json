@@ -207,7 +207,7 @@
       },
       {
         "view": "mergeAssistant.steps",
-        "contents": "Another Git operation (a rebase, cherry-pick or revert) is in progress. Finish or abort it before starting a merge here.",
+        "contents": "Another Git operation (a rebase or revert) is in progress. Finish or abort it before starting a merge here.",
         "when": "mergeAssistant.hasRepo && mergeAssistant.otherOperation"
       },
       {

@@ -172,6 +172,193 @@ The Validation Agent uses, in priority order:
 
 Each command has a 10 minute timeout, and a timeout kills the whole process tree. These commands run on your machine, so only use `--validate` in repositories you trust.
 
+## Technical flow (with diagrams)
+
+Maintaining the code? Start with the [developer guide](docs/DEVELOPER_GUIDE.md): commands, configuration, a file-by-file map, data shapes, both end-to-end flows, safety rules, tests and how to change things.
+
+The diagrams use [Mermaid](https://mermaid.js.org/); GitHub and VS Code's Markdown preview draw them.
+
+### 1. The layers
+
+Two front ends sit on one core. The core never imports `vscode`; a front end gives it two callbacks: `approve` (ask the user) and `onEvent` (report progress). `scripts/checkArchitecture.js` enforces the split.
+
+```mermaid
+flowchart TB
+  subgraph FE["Front ends (the only code that talks to a person)"]
+    CLI["bin/cli.js<br/>terminal: console.log + readline"]
+    EXT["src/ui/vscode/*<br/>sidebar, review page, pop-ups"]
+  end
+  subgraph VM["src/ui/viewmodel (plain functions, no editor)"]
+    SES["session.js<br/>state + EventEmitter"]
+    TREE["treeModel.js<br/>state to sidebar nodes"]
+    PAGE["reviewPage.js<br/>proposal to HTML"]
+  end
+  subgraph CORE["Core (UI-agnostic)"]
+    ORCH["orchestrator/index.js<br/>resolveConflicts: the ONLY code that writes files"]
+    AG["agents/*<br/>intent, reference, conflict, validation, dependency (read-only)"]
+    LLM["llm/*<br/>adapters + tool loop"]
+    GIT["git/* and conflict/*<br/>git calls, marker parser"]
+  end
+  CLI -->|"resolveConflicts({ approve, onEvent })"| ORCH
+  EXT -->|"resolveConflicts({ approve, onEvent, signal })"| ORCH
+  EXT --> SES --> TREE
+  EXT --> PAGE
+  ORCH --> AG --> LLM
+  ORCH --> GIT
+  AG --> GIT
+  LLM -->|"HTTP"| MODEL[("Ollama / OpenAI / Anthropic / compatible server")]
+```
+
+### 2. What happens when you click "Resolve Conflicts with AI"
+
+```mermaid
+sequenceDiagram
+  actor U as You
+  participant UI as resolveCommands.js
+  participant R as reviewPanel.js
+  participant O as resolveConflicts (orchestrator)
+  participant A as Agents
+  participant M as Model
+  participant F as Files on disk
+  participant S as session + sidebar
+
+  U->>UI: click
+  UI->>UI: checks (repo, operation, settings, key, Ollama ready, consent, unsaved files)
+  UI->>O: resolveConflicts({ approve, onEvent, signal, onlyFiles })
+  O->>A: Intent Agent (commit messages of both sides)
+  A->>M: ask
+  M-->>A: JSON
+  loop each conflicted file, then each conflict (hunk)
+    O->>A: Reference Agent: where are the changed names used?
+    O->>S: onEvent proposing
+    O->>A: Conflict Agent proposeResolution
+    A->>M: prompt (+ your earlier feedback)
+    M-->>A: JSON resolution, explanation, confidence
+    A-->>O: proposal + safeguard flags
+    alt flagged, low confidence, or a retry
+      O->>R: approve(file, fileText, hunk, proposal)
+      R->>U: review page
+      U-->>R: Accept / Feedback / Edit / Skip
+      R-->>O: decision
+    else confident and clean
+      O->>O: auto-accept
+    end
+  end
+  O->>F: write accepted conflicts (resolved, or partial if some were skipped)
+  O-->>UI: results
+  O->>S: onEvent (every step)
+  UI->>S: recordResults, then gitState.refresh
+  S-->>U: sidebar redraws
+```
+
+### 3. The decision loop for one conflict
+
+This is the inside of `resolveConflicts` (`src/orchestrator/index.js`, three nested loops: file, conflict, attempt).
+
+```mermaid
+flowchart TD
+  A["Parse hunks of the file"] --> B["Reference Agent: usages of disputed names"]
+  B --> C["Conflict Agent proposes<br/>(retry once if the JSON is broken)"]
+  C --> D{"Safeguards:<br/>one side discarded?<br/>lines dropped?<br/>name still used elsewhere?"}
+  D --> E{"Ask the user?<br/>flagged or low confidence<br/>or --review or this is a retry"}
+  E -->|no| ACC["accept"]
+  E -->|yes| H["approve() callback"]
+  H -->|accept| ACC
+  H -->|"feedback (retry)"| L{"attempts left?"}
+  L -->|yes| C
+  L -->|no| SKIP
+  H -->|edit| ED["check the typed text too"] --> ACC
+  H -->|skip| SKIP["keep this conflict's markers"]
+  ACC --> NEXT["next conflict"]
+  SKIP --> NEXT
+  NEXT --> W{"any accepted?"}
+  W -->|no| REJ["file: rejected (or failed on a model error)"]
+  W -->|yes| CHK{"markers left in file = skipped ones?"}
+  CHK -->|no| FAIL["file: failed (nothing written)"]
+  CHK -->|yes| WR["write file: resolved, or partial"]
+```
+
+### 4. Cancelling mid-run
+
+```mermaid
+sequenceDiagram
+  participant UI as resolveCommands
+  participant W as resolveConflicts (wrapper)
+  participant R as run (inner)
+  UI->>W: options with signal
+  W->>W: results = []
+  W->>R: run(options, results)
+  R->>R: file 1 done, results.push(file 1)
+  UI-->>R: Cancel pressed, signal aborts
+  R--xW: throws AbortError at the next check
+  W->>W: catch: createAbortError('Cancelled', results)
+  W--xUI: AbortError with error.results
+  UI->>UI: session.recordResults(error.results)
+```
+
+`results` is created in the wrapper and passed in by reference, so what `run` pushed before the throw is still there. Cancel is checked between files and conflicts, passed to the model request, and wired to the validation runner, which kills the process tree.
+
+### 5. Optional tool calling (`--tools` / `useTools`)
+
+The model only asks; this code runs the read-only tool and sends the text back.
+
+```mermaid
+sequenceDiagram
+  participant AG as Agent
+  participant TL as runToolLoop
+  participant M as Model
+  participant T as Tool (readOnlyTools.js)
+  AG->>TL: system, messages, tools
+  loop up to maxSteps
+    TL->>M: chat(messages, tools)
+    alt model replies with text only
+      M-->>TL: JSON answer
+      TL-->>AG: text
+    else model requests calls
+      M-->>TL: toolCalls (name, args)
+      TL->>T: run(args) (max 4 per turn, repeats reused)
+      T-->>TL: text (cut at 6000 chars) or an error message
+      TL->>M: tool results
+    end
+  end
+  Note over TL,M: when the budget is used up the model is told to answer now
+```
+
+If the model or server rejects tools, `askWithOptionalTools` falls back to a plain request and switches tools off for the rest of the run. A cancel is never treated as "tools unsupported".
+
+### 6. The extension: startup and live updates
+
+```mermaid
+flowchart LR
+  VS["VS Code loads dist/extension.js"] --> ACT["activate(context)<br/>extension.js"]
+  ACT --> AW["activateWith(vscode, context)<br/>activate.js: builds and wires everything"]
+  AW --> GS["gitState.js<br/>reads .git markers + conflict files"]
+  GS -->|"syncGit"| SES["session.js<br/>state"]
+  RUN["orchestrator events"] -->|"handleEvent / recordResults"| SES
+  SES -->|"emit 'change'"| TP["treeProvider.js"]
+  TP --> TM["treeModel.js: state to nodes"]
+  TM --> SB["sidebar: Merge, Conflicts, Review, Validate, Stage"]
+  GIT2["git changed outside<br/>(terminal, commit, abort)"] -->|"watcher + window focus"| GS
+```
+
+The session has two sources of truth: **git** (what is on disk, so a reload loses nothing) and **run events** (what the AI is doing right now). Everything on screen is derived from the session.
+
+### 7. Applying a cherry-pick
+
+```mermaid
+flowchart TD
+  P["Check Cherry-pick: pick branch, then commit"] --> PF["runPreflight in a temporary worktree<br/>(your files are not touched)"]
+  PF --> O{"outcome"}
+  O -->|blocked| STOP["report only, no Apply button"]
+  O -->|"safe, conditional, risky"| BTN["Apply Cherry-pick button"]
+  BTN --> CF{"clean tree?<br/>no operation in progress?"}
+  CF -->|no| REF["refused, nothing changed"]
+  CF -->|yes| MOD["modal confirmation (says a commit is created)<br/>non-safe: type the word apply"]
+  MOD --> RUN["git cherry-pick"]
+  RUN -->|"clean"| DONE["Git created the commit"]
+  RUN -->|"conflicts"| FLOW["same sidebar steps as a merge:<br/>review, partial resolve, validate, Stage<br/>Abort runs git cherry-pick --abort"]
+```
+
 ## Cherry-pick preflight
 
 ```bash
@@ -219,7 +406,7 @@ The same core is available as a VS Code extension, **Merge Assistant** (in [exte
 - **Resolve with AI**: confident answers are applied; doubtful ones open a review page in the editor with ours, theirs and the proposal side by side (lines a side changed are marked as in the proposal or missing from it), then Accept, Give feedback (typed in the page; the model proposes again) or Skip this conflict. In a file with several conflicts, what you accept is kept when you skip another one. The run can be cancelled and finished files are kept.
 - **Run checks** after showing the exact commands first (a merge brings in code from another branch, which may have changed them).
 - **Set Up AI Model** is a guided wizard for choosing where the AI runs: Ollama on your computer, OpenAI, Claude, or another OpenAI-compatible server. It lists the models you can actually use (the ones you have downloaded, or that your key gives access to), takes your API key into VS Code's secret storage, and saves only after one real test request works; if it fails, it says why (key rejected, model not found, Ollama not running...). Each key is kept against its own server, so your OpenAI key can never be sent to some other address.
-- **Check Cherry-pick** gives the preflight report and can copy the `git cherry-pick` command. It never applies it.
+- **Check or Apply Cherry-pick** gives the preflight report. After a check that is not blocked you can apply it (clean tree required, with a confirmation; a clean pick is committed by Git, conflicts continue into the usual steps and Abort works). It can also copy the `git cherry-pick` command.
 - **A merge never commits; stages only on request.** (An applied cherry-pick that has no conflicts is committed by Git itself, after a confirmation that says so.) Git keeps listing resolved files as conflicts until they are staged, so a **Stage Resolved Files** button marks the files it resolved (after you confirm the list and see what the checks said). You review and commit in Source Control.
 
 ```bash
