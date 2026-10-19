@@ -30,7 +30,7 @@ export const createGitState = ({ vscode, session, getRepo, logger, debounceMs = 
 
     const merge = await getMergeState(repo.root);
     const files = [];
-    if (merge.inProgress) {
+    if (merge.resolvable) {
       for (const path of merge.conflictedFiles) {
         let hunks = [];
         try {
@@ -45,8 +45,8 @@ export const createGitState = ({ vscode, session, getRepo, logger, debounceMs = 
 
     await Promise.all([
       setContext('mergeAssistant.hasRepo', true),
-      setContext('mergeAssistant.mergeInProgress', merge.inProgress),
-      setContext('mergeAssistant.otherOperation', Boolean(merge.operation) && !merge.inProgress),
+      setContext('mergeAssistant.mergeInProgress', merge.resolvable),
+      setContext('mergeAssistant.otherOperation', Boolean(merge.operation) && !merge.resolvable),
       setContext('mergeAssistant.hasConflicts', files.some((f) => f.hunks.length > 0)),
     ]);
   };

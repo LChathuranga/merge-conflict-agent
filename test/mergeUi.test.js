@@ -192,13 +192,21 @@ test('a merge or another operation already in progress blocks starting a new mer
     assert.equal(fake.callsOf('quickPick').length, 0, 'no branch is offered');
 
     git(dir, 'merge', '--abort');
+    // A cherry-pick is something this tool walks through, so it is "in progress" too.
     try { git(dir, 'cherry-pick', 'feature'); } catch { /* the conflict is expected */ }
+    await run('mergeAssistant.refresh');
+    assert.equal(fake.contexts.get('mergeAssistant.mergeInProgress'), true);
+    await run('mergeAssistant.mergeBranch');
+    assert.match(fake.messages('warning')[1], /A cherry-pick is already in progress/);
+    git(dir, 'cherry-pick', '--abort');
+
+    // A revert is not ours: it is explained, not offered.
+    writeFileSync(path.join(dir, '.git', 'REVERT_HEAD'), `${git(dir, 'rev-parse', 'HEAD')}\n`);
     await run('mergeAssistant.refresh');
     assert.equal(fake.contexts.get('mergeAssistant.otherOperation'), true, 'the welcome text explains why nothing is offered');
     assert.equal(fake.contexts.get('mergeAssistant.mergeInProgress'), false);
-
     await run('mergeAssistant.mergeBranch');
-    assert.match(fake.messages('warning')[1], /A cherry-pick is already in progress/);
+    assert.match(fake.messages('warning')[2], /A revert is already in progress/);
   } finally {
     await finish(dir);
   }

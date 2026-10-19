@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { isResolvable } from '../../git/merge.js';
 
 // The state behind the sidebar: what merge is in progress, which files conflict, what the AI
 // run is doing right now and how it ended. Pure and UI-free; the tree is built from it.
@@ -47,7 +48,8 @@ export const createSession = () => {
 
     // What git says right now. `files` are the conflicted paths with their parsed hunks.
     syncGit({ branch, detached, operation, theirs, files }) {
-      const merging = operation === 'merge';
+      // A merge or a cherry-pick: both stop with conflicts to resolve.
+      const merging = isResolvable(operation);
       const previous = new Map(state.files.map((f) => [f.path, f]));
 
       state = {

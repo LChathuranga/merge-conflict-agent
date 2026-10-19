@@ -1,5 +1,6 @@
 import { access } from 'node:fs/promises';
 import path from 'node:path';
+import { isResolvable } from '../../git/merge.js';
 import { planValidation, runValidation } from '../../agents/validationAgent.js';
 import { describeEvent } from '../viewmodel/runSummary.js';
 
@@ -26,8 +27,8 @@ export const validateCommands = ({ vscode, getRepo, session, runner, logger, pla
       return;
     }
     const { state } = session;
-    if (state.operation !== 'merge') {
-      await vscode.window.showInformationMessage('There is no merge in progress, so there is nothing to check.');
+    if (!isResolvable(state.operation)) {
+      await vscode.window.showInformationMessage('There is no merge in progress (or cherry-pick), so there is nothing to check.');
       return;
     }
     const unresolved = state.files.filter((f) => f.hunks.length > 0);

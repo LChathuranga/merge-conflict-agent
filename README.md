@@ -220,7 +220,7 @@ The same core is available as a VS Code extension, **Merge Assistant** (in [exte
 - **Run checks** after showing the exact commands first (a merge brings in code from another branch, which may have changed them).
 - **Set Up AI Model** is a guided wizard for choosing where the AI runs: Ollama on your computer, OpenAI, Claude, or another OpenAI-compatible server. It lists the models you can actually use (the ones you have downloaded, or that your key gives access to), takes your API key into VS Code's secret storage, and saves only after one real test request works; if it fails, it says why (key rejected, model not found, Ollama not running...). Each key is kept against its own server, so your OpenAI key can never be sent to some other address.
 - **Check Cherry-pick** gives the preflight report and can copy the `git cherry-pick` command. It never applies it.
-- **Never commits, and stages only on request.** Git keeps listing resolved files as conflicts until they are staged, so a **Stage Resolved Files** button marks the files it resolved (after you confirm the list and see what the checks said). You review and commit in Source Control.
+- **A merge never commits; stages only on request.** (An applied cherry-pick that has no conflicts is committed by Git itself, after a confirmation that says so.) Git keeps listing resolved files as conflicts until they are staged, so a **Stage Resolved Files** button marks the files it resolved (after you confirm the list and see what the checks said). You review and commit in Source Control.
 
 ```bash
 npm run ext:install     # once: installs the extension's build tools

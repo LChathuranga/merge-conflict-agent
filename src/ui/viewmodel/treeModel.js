@@ -2,6 +2,7 @@
 // here: the provider maps these to TreeItems. Ids are stable (built from paths and positions,
 // never counters) so selection and expansion survive a refresh.
 
+import { isResolvable } from '../../git/merge.js';
 import { stageableFiles } from './stageModel.js';
 
 const node = (id, label, extra = {}) => ({ id, label, collapsible: 'none', children: [], ...extra });
@@ -88,7 +89,7 @@ const validationChildren = (validation) =>
 
 // `busy` is true while a run is in progress (resolve or validate).
 export const buildTree = (state, { busy = false } = {}) => {
-  if (!state.repo || state.operation !== 'merge') return [];
+  if (!state.repo || !isResolvable(state.operation)) return [];
 
   const summary = {
     total: state.files.length,
@@ -103,14 +104,16 @@ export const buildTree = (state, { busy = false } = {}) => {
   const pendingWork = state.files.some((f) => f.hunks.length > 0 && ['pending', 'skipped', 'failed', 'partial'].includes(f.status));
 
   const target = state.theirs?.label ?? 'another branch';
-  const mergeStep = node('step:merge', '1. Merge', {
-    description: `${target} into ${state.branch ?? 'HEAD'}`,
-    icon: { id: 'git-merge' },
+  const isPick = state.operation === 'cherry-pick';
+  const noun = isPick ? 'cherry-pick' : 'merge';
+  const mergeStep = node('step:merge', isPick ? '1. Cherry-pick' : '1. Merge', {
+    description: isPick ? `${target} onto ${state.branch ?? 'HEAD'}` : `${target} into ${state.branch ?? 'HEAD'}`,
+    icon: { id: isPick ? 'git-pull-request-go-to-changes' : 'git-merge' },
     collapsible: 'expanded',
     contextValue: 'mergeStep',
-    tooltip: 'Abort merge discards the merge and every resolution made since it started.',
+    tooltip: `Abort ${noun} discards the ${noun} and every resolution made since it started.`,
     children: [
-      node('merge:info', noConflicts ? (state.hadConflicts ? 'All conflicts are handled' : 'Merged without conflicts') : `${plural(summary.total, 'file')} with conflicts`, {
+      node('merge:info', noConflicts ? (state.hadConflicts ? 'All conflicts are handled' : isPick ? 'No conflicts' : 'Merged without conflicts') : `${plural(summary.total, 'file')} with conflicts`, {
         icon: { id: noConflicts ? 'check' : 'warning', color: noConflicts ? 'charts.green' : 'charts.yellow' },
       }),
       ...(state.intent

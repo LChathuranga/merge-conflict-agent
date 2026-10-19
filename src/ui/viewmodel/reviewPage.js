@@ -149,6 +149,17 @@ header { margin-bottom: 18px; }
 .ln.new { background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #d29922) 16%, transparent); }
 .ln.new .tag { color: var(--vscode-editorWarning-foreground, #d29922); font-weight: 600; }
 .empty { padding: 10px 14px; color: var(--vscode-descriptionForeground); font-style: italic; }
+.around { margin: 20px 0 0; }
+.around h3 { margin: 0 0 6px; font-size: 0.9em; text-transform: uppercase; letter-spacing: .06em; color: var(--vscode-descriptionForeground); }
+.around .card { --accent: var(--vscode-panel-border, rgba(128,128,128,.5)); }
+.ln.here { background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #d29922) 14%, transparent); font-style: italic; }
+.ln.here .tx { color: var(--vscode-descriptionForeground); }
+.ln.mark { background: color-mix(in srgb, var(--vscode-editorError-foreground, #f85149) 10%, transparent); }
+.ln.mark .tag { color: var(--vscode-editorError-foreground, #f85149); }
+.ln.cur { background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #d29922) 18%, transparent); }
+details.whole { margin-top: 10px; }
+details.whole summary { cursor: pointer; color: var(--vscode-textLink-foreground); padding: 4px 0; }
+details.whole .code { max-height: 60vh; overflow: auto; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 8px; }
 .legend { margin: 10px 2px 0; color: var(--vscode-descriptionForeground); font-size: 0.88em; display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: baseline; }
 .legend .k { background: var(--vscode-testing-iconPassed, #3fb950); }
@@ -252,6 +263,43 @@ const codeBlock = (lines, { empty }) => {
   return `<div class="code">${rows.join('')}</div>`;
 };
 
+const CONTEXT_LINES = 12;
+const MAX_FILE_LINES = 2000;
+const MARKER = /^(<{7}|={7}$|>{7}|\|{7})/;
+
+// Numbered rows of the real file. The conflict being reviewed is folded into one row in the short
+// view (its three versions are shown above); the long view shows the whole file as it is on disk.
+const fileRows = (rows) =>
+  `<div class="code">${rows.map(({ no, text, cls, tag }) =>
+    `<div class="ln ${cls}"><span class="no">${no}</span><span class="body"><span class="tx">${esc(text) || ' '}</span>${tag ? `<span class="tag">${esc(tag)}</span>` : ''}</span></div>`).join('')}</div>`;
+
+export const renderFileContext = (fileText, hunk) => {
+  if (typeof fileText !== 'string' || !hunk) return '';
+  const lines = fileText.split(/\r?\n/);
+  const row = (i) => {
+    const no = i + 1;
+    const text = lines[i];
+    if (no >= hunk.startLine && no <= hunk.endLine) return { no, text, cls: 'cur', tag: no === hunk.startLine ? 'this conflict' : '' };
+    if (MARKER.test(text)) return { no, text, cls: 'mark', tag: 'another conflict' };
+    return { no, text, cls: 'context', tag: '' };
+  };
+  const from = Math.max(0, hunk.startLine - 1 - CONTEXT_LINES);
+  const to = Math.min(lines.length, hunk.endLine + CONTEXT_LINES);
+  const short = [];
+  for (let i = from; i < hunk.startLine - 1; i += 1) short.push(row(i));
+  short.push({ no: hunk.startLine, text: `Conflict lines ${hunk.startLine}-${hunk.endLine} (shown in the three boxes above)`, cls: 'here', tag: '' });
+  for (let i = hunk.endLine; i < to; i += 1) short.push(row(i));
+
+  const capped = lines.length > MAX_FILE_LINES;
+  const whole = [];
+  for (let i = 0; i < Math.min(lines.length, MAX_FILE_LINES); i += 1) whole.push(row(i));
+  return `<section class="around" aria-label="The rest of the file">
+  <h3>Around this conflict in the file</h3>
+  <article class="card">${fileRows(short)}</article>
+  <details class="whole"><summary>Show the whole file (${lines.length} lines)</summary>${fileRows(whole)}${capped ? `<p class="hint">Only the first ${MAX_FILE_LINES} lines are shown.</p>` : ''}</details>
+</section>`;
+};
+
 const flagFor = (count, text, noteClass = '') =>
   count > 0 ? `<span class="flag ${noteClass}">${count} ${esc(text)}</span>` : '';
 
@@ -259,7 +307,7 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 // model: { request, file, index, total, attempt, hunk, proposal }
 export const renderReviewHtml = (model, { nonce, cspSource }) => {
-  const { request, file, index = 0, total = 1, attempt = 0, hunk, proposal } = model;
+  const { request, file, index = 0, total = 1, attempt = 0, hunk, proposal, fileText } = model;
   const classes = classifyLines({ ours: hunk.ours, theirs: hunk.theirs, base: hunk.base, resolution: proposal.resolution });
   const flags = proposal.flags ?? [];
   const warned = flags.length > 0;
@@ -320,6 +368,7 @@ ${alertHtml}
     ${codeBlock(classes.proposed, { empty: 'The proposal is empty: it would delete this code.' })}
   </article>
 </section>
+${renderFileContext(fileText, hunk)}
 ${hasLegend ? `<p class="legend"><span><i class="k"></i>a change this side made is in the proposal</span><span><i class="d"></i>a change this side made is missing from it</span><span><i class="n"></i>text neither side had</span></p>` : ''}
 ${proposal.explanation ? `<section class="why"><h3>Why the model chose this</h3><p>${esc(proposal.explanation)}</p></section>` : ''}
 </div>

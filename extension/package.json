@@ -93,7 +93,7 @@
       },
       {
         "command": "mergeAssistant.checkCherryPick",
-        "title": "Check Cherry-pick...",
+        "title": "Check or Apply Cherry-pick...",
         "category": "Merge Assistant",
         "icon": "$(git-pull-request-go-to-changes)"
       },
@@ -212,7 +212,7 @@
       },
       {
         "view": "mergeAssistant.steps",
-        "contents": "No merge in progress.\nMerge a branch into the current one, then resolve any conflicts here, step by step. Merge Assistant never stages or commits for you.\n[Merge a Branch...](command:mergeAssistant.mergeBranch)\n[Set Up AI Model...](command:mergeAssistant.setUpModel)",
+        "contents": "No merge in progress.\nMerge a branch into the current one, then resolve any conflicts here, step by step. A merge never commits on its own, and files are staged only when you click Stage.\n[Merge a Branch...](command:mergeAssistant.mergeBranch)\nOr check whether a commit is safe to cherry-pick. The check changes nothing; you can then apply it, with a confirmation.\n[Check or Apply a Cherry-pick...](command:mergeAssistant.checkCherryPick)\n[Set Up AI Model...](command:mergeAssistant.setUpModel)",
         "when": "mergeAssistant.hasRepo && !mergeAssistant.mergeInProgress && !mergeAssistant.otherOperation"
       }
     ],
@@ -297,6 +297,11 @@
           "command": "mergeAssistant.testModel",
           "when": "view == mergeAssistant.steps",
           "group": "2_settings@0.5"
+        },
+        {
+          "command": "mergeAssistant.checkCherryPick",
+          "when": "view == mergeAssistant.steps && mergeAssistant.hasRepo && !mergeAssistant.mergeInProgress && !mergeAssistant.busy",
+          "group": "navigation@1.5"
         }
       ],
       "view/item/context": [

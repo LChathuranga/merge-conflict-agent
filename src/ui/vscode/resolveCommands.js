@@ -1,3 +1,4 @@
+import { isResolvable } from '../../git/merge.js';
 import { createLLMClient } from '../../llm/index.js';
 import { resolveConflicts } from '../../orchestrator/index.js';
 import { isAbort } from '../../util/abort.js';
@@ -63,8 +64,8 @@ export const resolveCommands = ({
       return;
     }
     const { state } = session;
-    if (state.operation !== 'merge') {
-      await say.info('There is no merge in progress. Start one with "Merge a Branch..." first.');
+    if (!isResolvable(state.operation)) {
+      await say.info('There is no merge in progress (or cherry-pick). Start one with "Merge a Branch..." or "Apply Cherry-pick" first.');
       return;
     }
 

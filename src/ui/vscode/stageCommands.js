@@ -1,3 +1,4 @@
+import { isResolvable } from '../../git/merge.js';
 import { stageResolvedFiles } from '../../orchestrator/stage.js';
 import { stageableFiles, stageNotes } from '../viewmodel/stageModel.js';
 
@@ -14,8 +15,8 @@ export const stageCommands = ({ vscode, getRepo, session, gitState, runner, logg
       return;
     }
     const { state } = session;
-    if (state.operation !== 'merge') {
-      await vscode.window.showInformationMessage('There is no merge in progress, so there is nothing to stage.');
+    if (!isResolvable(state.operation)) {
+      await vscode.window.showInformationMessage('There is no merge in progress, so there is nothing to stage. (A cherry-pick counts as a merge here.)');
       return;
     }
     if (runner.busy) {

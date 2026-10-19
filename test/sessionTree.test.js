@@ -249,3 +249,17 @@ test('step rows that name an action perform it when clicked, and only when it ca
   assert.equal(tree.find((n) => n.id === 'step:validate').command.id, 'mergeAssistant.runChecks');
   assert.match(tree.find((n) => n.id === 'step:validate').description, /click to run checks/);
 });
+
+test('a cherry-pick with conflicts shows the same steps, worded for a cherry-pick', () => {
+  const session = createSession();
+  session.setRepo({ root: '/repo', name: 'repo' });
+  session.syncGit(git({ operation: 'cherry-pick', theirs: { sha: 'abc1234', label: 'abc1234 "Fix totals"' } }));
+  const tree = buildTree(session.state);
+  assert.deepEqual(tree.map((n) => n.label.split('.')[0]), ['1', '2', '3', '4']);
+  assert.equal(tree[0].label, '1. Cherry-pick');
+  assert.equal(tree[0].description, 'abc1234 "Fix totals" onto main');
+  assert.match(tree[0].tooltip, /Abort cherry-pick discards the cherry-pick/);
+
+  session.syncGit(git({ operation: 'revert' }));
+  assert.deepEqual(buildTree(session.state), [], 'a revert is not shown as steps');
+});

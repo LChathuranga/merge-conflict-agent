@@ -117,7 +117,7 @@ export const activateWith = async (vscode, context, { debounceMs, createClient, 
   register('mergeAssistant.resolveFile', resolver.resolveFile);
   const checks = validateCommands({ vscode, getRepo, session, runner, logger });
   register('mergeAssistant.runChecks', checks.runChecks);
-  const pick = cherryPickCommands({ vscode, getRepo, runner, logger, ...(preflight ? { preflight } : {}) });
+  const pick = cherryPickCommands({ vscode, getRepo, runner, logger, gitState, ...(preflight ? { preflight } : {}) });
   context.subscriptions.push(pick);
   register('mergeAssistant.checkCherryPick', pick.checkCherryPick);
   const staging = stageCommands({ vscode, getRepo, session, gitState, runner, logger });

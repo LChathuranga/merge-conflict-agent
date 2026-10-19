@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { repoFromTemplate } from '../test-support/gitRepo.js';
-import { abortMerge, getMergeState, listMergeCandidates, pendingOperation, startMerge } from '../src/git/merge.js';
+import { abortMerge, abortOperation, getMergeState, listMergeCandidates, pendingOperation, startMerge } from '../src/git/merge.js';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const cleanup = (dir) => rmSync(dir, { recursive: true, force: true });
@@ -246,6 +246,41 @@ test('merge candidates are the branches that have something to merge, with count
       { name: 'feature', ahead: 1 },
       { name: 'stranger', ahead: 1 },
     ]);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('a cherry-pick that conflicts is a resolvable operation, named by its commit, and can be aborted', async () => {
+  const dir = makeRepo();
+  try {
+    try { git(dir, 'cherry-pick', 'feature'); } catch { /* the conflict is expected */ }
+    const state = await getMergeState(dir);
+    assert.equal(state.operation, 'cherry-pick');
+    assert.equal(state.resolvable, true);
+    assert.equal(state.inProgress, false, 'inProgress still means a merge');
+    assert.match(state.theirs.label, /^[0-9a-f]{7} ".+"$/);
+    assert.ok(state.conflictedFiles.length > 0);
+
+    const head = git(dir, 'rev-parse', 'HEAD');
+    const result = await abortOperation(dir);
+    assert.equal(result.status, 'aborted');
+    assert.equal(result.operation, 'cherry-pick');
+    assert.equal(git(dir, 'rev-parse', 'HEAD'), head);
+    assert.equal((await getMergeState(dir)).operation, null);
+    assert.equal((await abortOperation(dir)).status, 'refused');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('abortOperation leaves a revert alone', async () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(path.join(dir, '.git', 'REVERT_HEAD'), `${git(dir, 'rev-parse', 'HEAD')}\n`);
+    const result = await abortOperation(dir);
+    assert.equal(result.status, 'refused');
+    assert.equal(result.reason, 'other-operation');
   } finally {
     cleanup(dir);
   }

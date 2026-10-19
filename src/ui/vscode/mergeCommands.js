@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { abortMerge, getMergeState, listMergeCandidates, startMerge } from '../../git/merge.js';
+import { abortOperation, getMergeState, listMergeCandidates, pendingOperation, startMerge } from '../../git/merge.js';
 import { ensureSaved } from './dirtyGuard.js';
 import { sameRoot } from './repo.js';
 
@@ -47,8 +47,8 @@ export const mergeCommands = ({ vscode, getRepo, gitState, runner, logger }) => 
       const state = await getMergeState(repo.root);
       if (state.operation) {
         await vscode.window.showWarningMessage(
-          state.inProgress
-            ? 'A merge is already in progress. Resolve it in the Merge Assistant view, or abort it first.'
+          state.resolvable
+            ? `A ${state.operation} is already in progress. Resolve it in the Merge Assistant view, or abort it first.`
             : `A ${state.operation} is already in progress. Finish or abort it before starting a merge.`
         );
         return;
@@ -97,18 +97,19 @@ export const mergeCommands = ({ vscode, getRepo, gitState, runner, logger }) => 
       const repo = needRepo();
       if (!repo) return;
 
+      const noun = (await pendingOperation(repo.root)) === 'cherry-pick' ? 'cherry-pick' : 'merge';
       const confirm = await vscode.window.showWarningMessage(
-        'Abort the merge?',
-        { modal: true, detail: 'This discards the merge and every conflict resolution made since it started, including edits you made by hand to the merged files.' },
+        `Abort the ${noun}?`,
+        { modal: true, detail: `This discards the ${noun} and every conflict resolution made since it started, including edits you made by hand to the affected files.` },
         'Abort Merge'
       );
       if (confirm !== 'Abort Merge') return;
 
-      const result = await abortMerge(repo.root);
-      logger.info(`abort merge: ${result.status}`);
+      const result = await abortOperation(repo.root);
+      logger.info(`abort ${noun}: ${result.status}`);
       await gitState.refresh();
-      if (result.status === 'aborted') await vscode.window.showInformationMessage('Merge aborted. The branch is back as it was.');
-      else await vscode.window.showWarningMessage(`The merge was not aborted: ${result.message}`);
+      if (result.status === 'aborted') await vscode.window.showInformationMessage(`${noun === 'merge' ? 'Merge' : 'Cherry-pick'} aborted. The branch is back as it was.`);
+      else await vscode.window.showWarningMessage(`The ${noun} was not aborted: ${result.message}`);
     },
 
     refresh: () => gitState.refresh(),

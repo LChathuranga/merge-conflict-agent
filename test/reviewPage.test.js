@@ -170,3 +170,16 @@ test('the in-between progress text names the file, which conflict, and feedback 
     { title: 'Thinking again about a.js', detail: 'The conflict (lines 3-9), using your feedback' });
   assert.equal(describeWorking({ type: 'resolved', file: 'a.js' }), null);
 });
+
+test('the page shows the code around the conflict, escaped, with other conflicts marked', () => {
+  const lines = ['// top <b>', 'before', '<<<<<<< HEAD', 'a', '=======', 'b', '>>>>>>> feature', 'between', '<<<<<<< HEAD', 'c', '=======', 'd', '>>>>>>> feature', 'end'];
+  const first = { ...hunk, startLine: 3, endLine: 7 };
+  const html = render({ hunk: first, fileText: lines.join('\n') });
+  assert.match(html, /Around this conflict in the file/);
+  assert.match(html, /\/\/ top &lt;b&gt;/, 'file text is escaped');
+  assert.match(html, /<span class="tx">between<\/span>/);
+  assert.match(html, /Conflict lines 3-7 \(shown in the three boxes above\)/);
+  assert.equal((html.match(/another conflict/g) ?? []).length, 6, 'its three marker lines are labelled in both the short and the whole-file view');
+  assert.match(html, /Show the whole file \(14 lines\)/);
+  assert.doesNotMatch(render({ hunk: first }), /Around this conflict/, 'no file text, no section');
+});

@@ -67,7 +67,7 @@ export const createReviewer = ({ vscode, signal }) => {
   signal?.addEventListener('abort', dispose, { once: true });
 
   return {
-    approve: ({ file, hunk, proposal, attempt = 0, index = 0, total = 1 }) =>
+    approve: ({ file, fileText, hunk, proposal, attempt = 0, index = 0, total = 1 }) =>
       new Promise((resolve) => {
         if (disposed) {
           resolve({ action: 'reject' });
@@ -79,7 +79,7 @@ export const createReviewer = ({ vscode, signal }) => {
         const view = open();
         view.title = `Review: ${file}`;
         view.webview.html = renderReviewHtml(
-          { request, file, index, total, attempt, hunk, proposal },
+          { request, file, index, total, attempt, hunk, proposal, fileText },
           { nonce: nonce(), cspSource: view.webview.cspSource }
         );
         view.reveal(vscode.ViewColumn.Active, false);

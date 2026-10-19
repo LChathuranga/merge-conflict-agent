@@ -24,7 +24,7 @@ const existingFiles = async (cwd, files) => {
 // UI-agnostic: user interaction goes through the `approve` callback and
 // progress through `onEvent`, so the CLI and a VS Code UI can both drive it.
 //
-// approve({ file, hunk, proposal, attempt }) ->
+// approve({ file, fileText, hunk, proposal, attempt }) ->
 //   { action: 'accept' | 'reject' | 'edit' | 'retry', resolution?, feedback? }
 // 'retry' sends `feedback` back to the model for a new proposal (up to maxAttempts per hunk).
 const run = async ({
@@ -168,7 +168,7 @@ const run = async ({
         onEvent({ type: 'proposed', file, hunk, proposal, asksUser, attempt, ...position });
 
         decision = asksUser
-          ? await raceAbort(approve({ file, hunk, proposal, attempt, ...position }), signal)
+          ? await raceAbort(approve({ file, fileText, hunk, proposal, attempt, ...position }), signal)
           : { action: 'accept' };
         if (decision.action !== 'retry') break;
 

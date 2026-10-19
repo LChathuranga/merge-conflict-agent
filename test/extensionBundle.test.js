@@ -64,3 +64,18 @@ test('every contributed command is registered by activate(), and nothing undecla
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a person with no merge in progress can find both the merge and the cherry-pick check', () => {
+  const welcome = manifest.contributes.viewsWelcome.find((w) => /No merge in progress/.test(w.contents));
+  assert.match(welcome.contents, /\(command:mergeAssistant\.mergeBranch\)/);
+  assert.match(welcome.contents, /\(command:mergeAssistant\.checkCherryPick\)/);
+  assert.match(welcome.contents, /A merge never commits on its own, and files are staged only when you click Stage/);
+  assert.doesNotMatch(welcome.contents, /never stages/, 'the old, now untrue promise is gone');
+
+  const toolbar = manifest.contributes.menus['view/title'].filter((e) => e.group.startsWith('navigation'));
+  for (const command of ['mergeAssistant.mergeBranch', 'mergeAssistant.checkCherryPick']) {
+    const entry = toolbar.find((e) => e.command === command);
+    assert.ok(entry, `${command} has a toolbar button`);
+    assert.match(entry.when, /!mergeAssistant\.mergeInProgress/, `${command} is hidden during a merge`);
+  }
+});
